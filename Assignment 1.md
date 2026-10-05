@@ -543,9 +543,10 @@ next_move       下一個尚未嘗試的 move
 last_face       上一個 move 的 face
 ```
 
-If a single frame is eventually arranged to be 8 bytes, 12 frames will be:
+The two 16-bit fields require two-byte alignment, so one frame occupies 6
+bytes.  Twelve frames require:
 $$
-12\times8=96\text{ B}
+12\times6=72\text{ B}
 $$
 
 ### 8. Estimated Memory Budget
@@ -666,14 +667,13 @@ typedef struct {
     uint16_t o;
     uint8_t next_move;
     uint8_t last_face;
-    uint8_t padding[2];
 } ida_frame_t;
 ```
 
-Each frame is exactly 8 bytes, so the DFS stack occupies:
+Each frame is exactly 6 bytes, so the DFS stack occupies:
 
 $$
-12\times8=96\text{ bytes}.
+12\times6=72\text{ bytes}.
 $$
 
 Moves of the same face are not generated consecutively.  Any such pair either
@@ -804,17 +804,19 @@ do {
 
 #### 7.5 Stack Addressing and Successful-Node Path
 
-The original six-byte frame required scaled indexing.  An eight-byte frame and
-a frame pointer reduce push/pop to:
+The search keeps a frame pointer instead of recomputing `stack[depth]`.
+Push and pop therefore require only:
 
 ```text
-push: ++frame
-pop:  --frame
+push: frame += 6
+pop:  frame -= 6
 ```
 
-This spends 24 extra stack bytes, increasing 12 frames from 72 to 96 bytes.
-Checking solved before the heuristic also skips two byte loads, the maximum,
-and the threshold comparison on the successful child.
+Both operations map to one `addi` on RV32I, so padding the frame to a
+power-of-two size would not improve pointer traversal.  A six-byte stride is
+still divisible by two, keeping both `uint16_t` fields aligned.  Checking
+solved before the heuristic also skips two byte loads, the maximum, and the
+threshold comparison on the successful child.
 
 #### 7.6 Operation-Count Summary
 
@@ -830,7 +832,7 @@ will be measured with Ripes after assembly translation.
 | Parse destination index | `i % 7` | Two fixed loops |
 | Transition table reads for `t` turns | `2t` | `2t` |
 | Transition loop-control sequences | Two per turn | One per turn |
-| DFS frame addressing | Six-byte indexed stride | Eight-byte pointer increment/decrement |
+| DFS frame addressing | Six-byte indexed stride | Six-byte pointer increment/decrement |
 | Successful child heuristic | Two loads plus max and comparison | Skipped |
 
 ### 8. C-Level Regression Results
@@ -838,20 +840,22 @@ will be measured with Ripes after assembly translation.
 The full H3 run was timed before and after the RV32I-oriented rewrite on the
 same native installation:
 
-| Version | H3 wall time | Peak RSS |
+| Version | Host H3 wall time | Host peak RSS during H3 |
 |---|---:|---:|
 | Static precomputation, before RV32I C rewrite | 235.27 s | 22,988 KiB |
-| RV32I-oriented C rewrite | 225.27 s | 23,112 KiB |
+| RV32I-oriented C rewrite, 6-byte frame | 226.16 s | 23,240 KiB |
 
 The native wall-time improvement was approximately:
 
 $$
-\frac{235.27-225.27}{235.27}\times100\%\approx4.3\%.
+\frac{235.27-226.16}{235.27}\times100\%\approx3.9\%.
 $$
 
 This is only a regression trend: x86-64 optimizes constant division differently
 from RV32I, so it is not a target-speed claim.  All transition, H1/H2/H3,
-known-depth, sanitizer, invalid-input, and output-error tests still passed.
+known-depth, sanitizer, invalid-input, and output-error tests still passed.  The
+RSS values include the host-only BFS reference tables used by H3; they are not
+the target solver's memory footprint.
 
 The principal checks can be reproduced with:
 
@@ -864,4 +868,3 @@ size -A my_solver       # inspect static ELF sections
 
 `make check-h3` takes about four minutes on this installation because it runs a
 fresh IDA* search for every state.
-

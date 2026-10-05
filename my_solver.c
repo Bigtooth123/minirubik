@@ -28,11 +28,10 @@ typedef struct {
     uint16_t o;
     uint8_t next_move;
     uint8_t last_face;
-    uint8_t padding[2];
 } ida_frame_t;
 
-typedef char ida_frame_must_be_eight_bytes[
-    sizeof(ida_frame_t) == 8 ? 1 : -1];
+typedef char ida_frame_must_be_six_bytes[
+    sizeof(ida_frame_t) == 6 ? 1 : -1];
 
 static const char *const move_names[MOVES] = {
     "R", "R2", "R'", "B", "B2", "B'", "D", "D2", "D'"
