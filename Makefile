@@ -1,9 +1,12 @@
 CC ?= cc
 CFLAGS ?= -O3 -std=c99 -Wall -Wextra -Wpedantic
+HOSTCC ?= cc
+HOSTCFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wpedantic
 FRAMA_C ?= frama-c
 CLANG_FORMAT := $(shell command -v clang-format-20 2>/dev/null || \
 	command -v clang-format 2>/dev/null)
-C_SOURCES := $(wildcard *.c *.h)
+C_SOURCES := $(filter-out static_tables.h,$(wildcard *.c *.h))
+TABLE_GENERATOR := generate_tables
 SAMPLE_STATE := 21345671111111
 SAMPLE_SOLUTION := B' R' D2 R' B R B' R D2 B R'
 VECTORS := tests/solutions.txt
@@ -12,7 +15,7 @@ VECTORS := tests/solutions.txt
 INVALID_STATES := 1234567111111 123456711111111 02345671111111 82345671111111 \
 	12345671111110 12345671111114 1234567111111a 11345671111111 12345671111112
 
-.PHONY: all check check-ida check-h3 prove clean indent
+.PHONY: all check check-ida check-h3 check-static prove clean indent
 
 all: solver mini
 
@@ -22,8 +25,19 @@ solver: solver.c
 mini: mini.c
 	$(CC) $(CFLAGS) $< -o $@
 
-my_solver: my_solver.c
+my_solver: my_solver.c static_tables.h
 	$(CC) $(CFLAGS) $< -o $@
+
+$(TABLE_GENERATOR): generate_tables.c my_solver.c
+	$(HOSTCC) $(HOSTCFLAGS) generate_tables.c -o $@
+
+static_tables.h: $(TABLE_GENERATOR)
+	./$(TABLE_GENERATOR) >$@.tmp
+	mv $@.tmp $@
+
+check-static: my_solver $(TABLE_GENERATOR)
+	./$(TABLE_GENERATOR) | cmp - static_tables.h
+	./my_solver --self-test
 
 check-ida: my_solver
 	./my_solver --self-test
@@ -103,4 +117,4 @@ endif
 	$(CLANG_FORMAT) -i $(C_SOURCES)
 
 clean:
-	$(RM) solver mini my_solver
+	$(RM) solver mini my_solver $(TABLE_GENERATOR) static_tables.h.tmp

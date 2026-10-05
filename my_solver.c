@@ -55,21 +55,17 @@ static const uint8_t twist[FACES][CUBIES] = {
 };
 
 /*
- * Factored quarter-turn transition tables.
- *
- * These already existed conceptually in the baseline. They are now
- * independent of the complete BFS so they can later be reused by IDA*.
+ * The host generator needs writable storage while constructing the tables.
+ * Normal solver builds include the same data as compile-time constants.
  */
+#ifdef STATIC_TABLE_GENERATOR
 static uint16_t permutation[FACES][PERMUTATIONS];
 static uint16_t orientation[FACES][ORIENTATIONS];
-
-/*
- * New heuristic tables.
- *
- * No packing: one byte per entry.
- */
 static uint8_t perm_dist[PERMUTATIONS];
 static uint8_t ori_dist[ORIENTATIONS];
+#else
+#include "static_tables.h"
+#endif
 
 static state_t quarter_turn(state_t state, uint8_t face)
 {
@@ -195,9 +191,8 @@ static search_state_t encode_search_state(const state_t *state)
     return split_rank(rank_state(state));
 }
 
-/*
- * Generate the factored quarter-turn transition tables.
- */
+#ifdef STATIC_TABLE_GENERATOR
+/* Generate the factored quarter-turn transition tables on the host. */
 static void build_transition_tables(void)
 {
     state_t state;
@@ -222,6 +217,7 @@ static void build_transition_tables(void)
         }
     }
 }
+#endif
 
 static uint16_t apply_perm_move(uint16_t p, uint8_t move)
 {
@@ -252,6 +248,7 @@ static search_state_t apply_search_move(search_state_t state, uint8_t move)
     return state;
 }
 
+#ifdef STATIC_TABLE_GENERATOR
 /*
  * Build exact distances in the permutation abstraction.
  *
@@ -315,6 +312,7 @@ static void build_heuristic_tables(void)
     build_perm_heuristic();
     build_ori_heuristic();
 }
+#endif
 
 static uint8_t heuristic(search_state_t state)
 {
@@ -915,13 +913,6 @@ static int self_test(int exhaustive_transitions, int exhaustive_ida)
 
 int main(int argc, char **argv)
 {
-    /*
-     * This stage still generates transitions and heuristics at runtime.
-     * A later commit will turn them into host-generated const tables.
-     */
-    build_transition_tables();
-    build_heuristic_tables();
-
     if (argc == 2 && !strcmp(argv[1], "--self-test")) {
         if (!self_test(0, 0)) {
             fputs("self-test failed\n", stderr);
