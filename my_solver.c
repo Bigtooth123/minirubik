@@ -28,10 +28,11 @@ typedef struct {
     uint16_t o;
     uint8_t next_move;
     uint8_t last_face;
+    uint8_t padding[2];
 } ida_frame_t;
 
-typedef char ida_frame_must_fit_in_eight_bytes[
-    sizeof(ida_frame_t) <= 8 ? 1 : -1];
+typedef char ida_frame_must_be_eight_bytes[
+    sizeof(ida_frame_t) == 8 ? 1 : -1];
 
 static const char *const move_names[MOVES] = {
     "R", "R2", "R'", "B", "B2", "B'", "D", "D2", "D'"
@@ -39,6 +40,15 @@ static const char *const move_names[MOVES] = {
 
 static const uint8_t inverse_move[MOVES] = {
     2, 1, 0, 5, 4, 3, 8, 7, 6
+};
+
+/* Avoid division and remainder when decoding a move on RV32I. */
+static const uint8_t move_face[MOVES] = {
+    0, 0, 0, 1, 1, 1, 2, 2, 2
+};
+
+static const uint8_t move_turns[MOVES] = {
+    1, 2, 3, 1, 2, 3, 1, 2, 3
 };
 
 /* Each destination takes a cubie from source[face][destination]. */
@@ -67,14 +77,27 @@ static uint8_t ori_dist[ORIENTATIONS];
 #include "static_tables.h"
 #endif
 
+static const uint16_t *const permutation_face[FACES] = {
+    permutation[0], permutation[1], permutation[2]
+};
+
+static const uint16_t *const orientation_face[FACES] = {
+    orientation[0], orientation[1], orientation[2]
+};
+
 static state_t quarter_turn(state_t state, uint8_t face)
 {
     state_t result;
 
     for (uint8_t i = 0; i < CUBIES; ++i) {
         uint8_t from = source[face][i];
+        uint8_t o = (uint8_t) (state.o[from] + twist[face][i]);
+
+        if (o >= 3U)
+            o = (uint8_t) (o - 3U);
+
         result.p[i] = state.p[from];
-        result.o[i] = (uint8_t) ((state.o[from] + twist[face][i]) % 3U);
+        result.o[i] = o;
     }
 
     return result;
@@ -82,8 +105,8 @@ static state_t quarter_turn(state_t state, uint8_t face)
 
 static state_t apply_move(state_t state, uint8_t move)
 {
-    uint8_t face = (uint8_t) (move / 3U);
-    uint8_t turns = (uint8_t) (move % 3U + 1U);
+    uint8_t face = move_face[move];
+    uint8_t turns = move_turns[move];
 
     for (uint8_t i = 0; i < turns; ++i)
         state = quarter_turn(state, face);
@@ -91,27 +114,53 @@ static state_t apply_move(state_t state, uint8_t move)
     return state;
 }
 
-static uint32_t rank_state(const state_t *state)
+static uint8_t count_smaller_after(const state_t *state, uint8_t position)
 {
-    uint32_t p = 0, o = 0;
+    uint8_t smaller = 0;
 
-    for (uint8_t i = 0; i < CUBIES; ++i) {
-        uint8_t smaller = 0;
-
-        for (uint8_t j = (uint8_t) (i + 1U); j < CUBIES; ++j) {
-            if (state->p[j] < state->p[i])
-                ++smaller;
-        }
-
-        p = p * (CUBIES - i) + smaller;
+    for (uint8_t i = (uint8_t) (position + 1U); i < CUBIES; ++i) {
+        if (state->p[i] < state->p[position])
+            ++smaller;
     }
 
+    return smaller;
+}
+
+static uint16_t rank_permutation(const state_t *state)
+{
+    uint16_t p = count_smaller_after(state, 0);
+
+    p = (uint16_t) ((p << 2U) + (p << 1U) +
+                    count_smaller_after(state, 1));
+    p = (uint16_t) ((p << 2U) + p +
+                    count_smaller_after(state, 2));
+    p = (uint16_t) ((p << 2U) + count_smaller_after(state, 3));
+    p = (uint16_t) ((p << 1U) + p +
+                    count_smaller_after(state, 4));
+    p = (uint16_t) ((p << 1U) + count_smaller_after(state, 5));
+
+    return p;
+}
+
+static uint16_t rank_orientation(const state_t *state)
+{
+    uint16_t o = 0;
+
     for (uint8_t i = 0; i < 6; ++i)
-        o = o * 3U + state->o[i];
+        o = (uint16_t) ((o << 1U) + o + state->o[i]);
+
+    return o;
+}
+
+static uint32_t rank_state(const state_t *state)
+{
+    uint32_t p = rank_permutation(state);
+    uint32_t o = rank_orientation(state);
 
     return p * ORIENTATIONS + o;
 }
 
+/* Dense-rank decoding is used only by host-side generation and tests. */
 static void unrank_state(uint32_t rank, state_t *state)
 {
     uint8_t available[CUBIES] = {0, 1, 2, 3, 4, 5, 6};
@@ -139,7 +188,10 @@ static void unrank_state(uint32_t rank, state_t *state)
         o /= 3U;
     }
 
-    state->o[6] = (uint8_t) ((3U - sum % 3U) % 3U);
+    while (sum >= 3U)
+        sum = (uint8_t) (sum - 3U);
+
+    state->o[6] = sum == 0 ? 0 : (uint8_t) (3U - sum);
 }
 
 static int valid(const state_t *state)
@@ -158,19 +210,26 @@ static int valid(const state_t *state)
         sum = (uint8_t) (sum + state->o[i]);
     }
 
-    return sum % 3U == 0;
+    return sum == 0 || sum == 3 || sum == 6 ||
+           sum == 9 || sum == 12;
 }
 
 static int parse_state(const char *input, state_t *state)
 {
-    for (int i = 0; i < 14; ++i) {
-        int limit = i < 7 ? 7 : 3;
-
-        if (input[i] < '1' || input[i] > '0' + limit)
+    for (uint8_t i = 0; i < CUBIES; ++i) {
+        if (input[i] < '1' || input[i] > '7')
             return 0;
 
-        (i < 7 ? state->p : state->o)[i % 7] =
-            (uint8_t) (input[i] - '1');
+        state->p[i] = (uint8_t) (input[i] - '1');
+    }
+
+    for (uint8_t i = 0; i < CUBIES; ++i) {
+        char digit = input[CUBIES + i];
+
+        if (digit < '1' || digit > '3')
+            return 0;
+
+        state->o[i] = (uint8_t) (digit - '1');
     }
 
     return input[14] == '\0' && valid(state);
@@ -188,7 +247,12 @@ static search_state_t split_rank(uint32_t rank)
 
 static search_state_t encode_search_state(const state_t *state)
 {
-    return split_rank(rank_state(state));
+    search_state_t result;
+
+    /* Keep the components separate instead of dividing a dense rank by 729. */
+    result.p = rank_permutation(state);
+    result.o = rank_orientation(state);
+    return result;
 }
 
 #ifdef STATIC_TABLE_GENERATOR
@@ -219,32 +283,44 @@ static void build_transition_tables(void)
 }
 #endif
 
+#ifdef STATIC_TABLE_GENERATOR
 static uint16_t apply_perm_move(uint16_t p, uint8_t move)
 {
-    uint8_t face = (uint8_t) (move / 3U);
-    uint8_t turns = (uint8_t) (move % 3U + 1U);
+    const uint16_t *table = permutation_face[move_face[move]];
+    uint8_t turns = move_turns[move];
 
-    for (uint8_t i = 0; i < turns; ++i)
-        p = permutation[face][p];
+    do {
+        p = table[p];
+    } while (--turns != 0);
 
     return p;
 }
 
 static uint16_t apply_ori_move(uint16_t o, uint8_t move)
 {
-    uint8_t face = (uint8_t) (move / 3U);
-    uint8_t turns = (uint8_t) (move % 3U + 1U);
+    const uint16_t *table = orientation_face[move_face[move]];
+    uint8_t turns = move_turns[move];
 
-    for (uint8_t i = 0; i < turns; ++i)
-        o = orientation[face][o];
+    do {
+        o = table[o];
+    } while (--turns != 0);
 
     return o;
 }
+#endif
 
 static search_state_t apply_search_move(search_state_t state, uint8_t move)
 {
-    state.p = apply_perm_move(state.p, move);
-    state.o = apply_ori_move(state.o, move);
+    uint8_t face = move_face[move];
+    uint8_t turns = move_turns[move];
+    const uint16_t *p_table = permutation_face[face];
+    const uint16_t *o_table = orientation_face[face];
+
+    do {
+        state.p = p_table[state.p];
+        state.o = o_table[state.o];
+    } while (--turns != 0);
+
     return state;
 }
 
@@ -343,25 +419,25 @@ static int ida_star(search_state_t start, uint8_t *solution,
     while (bound <= MAX_SOLUTION_LENGTH) {
         uint8_t depth = 0;
         uint8_t next_bound = UINT8_MAX;
+        ida_frame_t *frame = &stack[0];
 
-        stack[0].p = start.p;
-        stack[0].o = start.o;
-        stack[0].next_move = 0;
-        stack[0].last_face = FACES;
+        frame->p = start.p;
+        frame->o = start.o;
+        frame->next_move = 0;
+        frame->last_face = FACES;
 
         for (;;) {
-            ida_frame_t *frame = &stack[depth];
-
             if (frame->next_move == MOVES) {
                 if (depth == 0)
                     break;
 
                 --depth;
+                --frame;
                 continue;
             }
 
             uint8_t move = frame->next_move++;
-            uint8_t face = (uint8_t) (move / 3U);
+            uint8_t face = move_face[move];
 
             if (face == frame->last_face)
                 continue;
@@ -370,15 +446,6 @@ static int ida_star(search_state_t start, uint8_t *solution,
             next = apply_search_move(next, move);
 
             uint8_t next_depth = (uint8_t) (depth + 1U);
-            uint8_t estimate =
-                (uint8_t) (next_depth + heuristic(next));
-
-            if (estimate > bound) {
-                if (estimate < next_bound)
-                    next_bound = estimate;
-
-                continue;
-            }
 
             solution[depth] = move;
 
@@ -387,10 +454,20 @@ static int ida_star(search_state_t start, uint8_t *solution,
                 return 1;
             }
 
-            stack[next_depth].p = next.p;
-            stack[next_depth].o = next.o;
-            stack[next_depth].next_move = 0;
-            stack[next_depth].last_face = face;
+            uint8_t estimate = (uint8_t) (next_depth + heuristic(next));
+
+            if (estimate > bound) {
+                if (estimate < next_bound)
+                    next_bound = estimate;
+
+                continue;
+            }
+
+            ++frame;
+            frame->p = next.p;
+            frame->o = next.o;
+            frame->next_move = 0;
+            frame->last_face = face;
             depth = next_depth;
         }
 
@@ -735,7 +812,7 @@ static int test_ida_star_known_distances(void)
             }
 
             if (move_index > 0 &&
-                solution[move_index - 1U] / 3U == move / 3U) {
+                move_face[solution[move_index - 1U]] == move_face[move]) {
                 fprintf(stderr,
                         "IDA* returned consecutive same-face moves for %s\n",
                         cases[i].input);
@@ -801,7 +878,7 @@ static int test_ida_star_full(const uint8_t *exact_distance)
             }
 
             if (move_index > 0 &&
-                solution[move_index - 1U] / 3U == move / 3U) {
+                move_face[solution[move_index - 1U]] == move_face[move]) {
                 fprintf(stderr,
                         "H3 failed at rank %u: consecutive "
                         "same-face moves\n",
