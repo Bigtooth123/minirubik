@@ -690,7 +690,7 @@ static int test_heuristic_admissibility(const uint8_t *exact_distance)
  * every returned path against the physical state model checks that the moves
  * really solve the input rather than merely satisfying the compact model.
  */
-static int test_ida_star(void)
+static int test_ida_star_known_distances(void)
 {
     static const struct {
         const char *input;
@@ -758,35 +758,106 @@ static int test_ida_star(void)
     return 1;
 }
 
-static int self_test(int exhaustive_transitions)
+/*
+ * H3:
+ *
+ * Solve every full state with IDA* and compare the returned solution length
+ * against the exact distance produced by the baseline BFS.  Replaying each
+ * path in the compact model also verifies that the returned moves end at the
+ * solved state.
+ */
+static int test_ida_star_full(const uint8_t *exact_distance)
+{
+    uint8_t solution[MAX_SOLUTION_LENGTH];
+
+    for (uint32_t rank = 0; rank < STATES; ++rank) {
+        search_state_t start = split_rank(rank);
+        search_state_t state = start;
+        uint8_t length;
+
+        if (!ida_star(start, solution, &length)) {
+            fprintf(stderr,
+                    "H3 failed: IDA* could not solve rank %u "
+                    "(p=%u o=%u)\n",
+                    rank, start.p, start.o);
+            return 0;
+        }
+
+        if (length != exact_distance[rank]) {
+            fprintf(stderr,
+                    "H3 failed at rank %u: IDA*=%u exact=%u "
+                    "(p=%u o=%u)\n",
+                    rank, length, exact_distance[rank],
+                    start.p, start.o);
+            return 0;
+        }
+
+        for (uint8_t move_index = 0; move_index < length; ++move_index) {
+            uint8_t move = solution[move_index];
+
+            if (move >= MOVES) {
+                fprintf(stderr,
+                        "H3 failed at rank %u: invalid move %u\n",
+                        rank, move);
+                return 0;
+            }
+
+            if (move_index > 0 &&
+                solution[move_index - 1U] / 3U == move / 3U) {
+                fprintf(stderr,
+                        "H3 failed at rank %u: consecutive "
+                        "same-face moves\n",
+                        rank);
+                return 0;
+            }
+
+            state = apply_search_move(state, move);
+        }
+
+        if (state.p != 0 || state.o != 0) {
+            fprintf(stderr,
+                    "H3 failed at rank %u: returned path did not solve "
+                    "the state\n",
+                    rank);
+            return 0;
+        }
+    }
+
+    printf("H3: IDA* matched exact BFS distances for %u states\n",
+           (unsigned) STATES);
+    return 1;
+}
+
+static int self_test(int exhaustive_transitions, int exhaustive_ida)
 {
     uint8_t diameter;
+    unsigned test_count = exhaustive_ida ? 8U : 7U;
 
-    puts("[1/7] move inverse");
+    printf("[1/%u] move inverse\n", test_count);
     if (!test_move_inverse())
         return 0;
 
-    puts("[2/7] rank/unrank");
+    printf("[2/%u] rank/unrank\n", test_count);
     if (!test_rank_roundtrip())
         return 0;
 
-    puts("[3/7] transition bounds");
+    printf("[3/%u] transition bounds\n", test_count);
     if (!test_transition_bounds())
         return 0;
 
     if (exhaustive_transitions)
-        puts("[4/7] exhaustive transition equivalence");
+        printf("[4/%u] exhaustive transition equivalence\n", test_count);
     else
-        puts("[4/7] sampled transition equivalence");
+        printf("[4/%u] sampled transition equivalence\n", test_count);
 
     if (!test_transition_equivalence(exhaustive_transitions))
         return 0;
 
-    puts("[5/7] H2 heuristic table sanity");
+    printf("[5/%u] H2 heuristic table sanity\n", test_count);
     if (!test_heuristic_tables())
         return 0;
 
-    puts("[6/7] H1 heuristic admissibility");
+    printf("[6/%u] H1 heuristic admissibility\n", test_count);
 
     uint8_t *exact_distance = malloc(STATES);
 
@@ -820,11 +891,23 @@ static int self_test(int exhaustive_transitions)
     }
 
     free(table);
-    free(exact_distance);
 
-    puts("[7/7] IDA* known-distance solutions");
-    if (!test_ida_star())
+    printf("[7/%u] IDA* known-distance solutions\n", test_count);
+    if (!test_ida_star_known_distances()) {
+        free(exact_distance);
         return 0;
+    }
+
+    if (exhaustive_ida) {
+        puts("[8/8] H3 exhaustive IDA*/BFS distance equivalence");
+
+        if (!test_ida_star_full(exact_distance)) {
+            free(exact_distance);
+            return 0;
+        }
+    }
+
+    free(exact_distance);
 
     puts("all tests passed");
     return 1;
@@ -840,7 +923,7 @@ int main(int argc, char **argv)
     build_heuristic_tables();
 
     if (argc == 2 && !strcmp(argv[1], "--self-test")) {
-        if (!self_test(0)) {
+        if (!self_test(0, 0)) {
             fputs("self-test failed\n", stderr);
             return 1;
         }
@@ -849,7 +932,7 @@ int main(int argc, char **argv)
     }
 
     if (argc == 2 && !strcmp(argv[1], "--full-test")) {
-        if (!self_test(1)) {
+        if (!self_test(1, 1)) {
             fputs("full test failed\n", stderr);
             return 1;
         }
