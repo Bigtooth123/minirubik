@@ -5,3 +5,6 @@ solver
 mini
 my_solver
 generate_tables
+rv32i_reference
+rv32i_reference_target
+rv32i_reference_tests
