@@ -868,3 +868,107 @@ size -A my_solver       # inspect static ELF sections
 
 `make check-h3` takes about four minutes on this installation because it runs a
 fresh IDA* search for every state.
+
+## Stage 4
+
+### 1. Assembly Source and Test Boundary
+
+`rv32i_reference.c` is the target-facing C specification.  It contains only
+input validation, component ranking, static-table IDA*, and solution replay;
+the host BFS and table builders remain in `my_solver.c`.  The reference has a
+host command-line build, a freestanding single-input build, and a freestanding
+three-case test build.
+
+The pinned Ripes AppImage reports `No C compiler set` for `-t c`, and no
+RISC-V GCC is installed on this machine.  Consequently, the required
+`riscv64-unknown-elf-gcc -O2 -march=rv32i -mabi=ilp32` code-size and instruction
+baseline is still pending.  Ripes is used here only as the assembler and
+simulator; no C-to-assembly performance claim is made yet.
+
+Ripes consumes one assembly source in CLI mode.  The Makefile therefore joins
+the maintained `rv32i_solver_core.s` with the generated
+`static_tables_rv32i.inc` to produce `rv32i_solver.s`.  A second generated
+source, `rv32i_solver_tests.s`, changes only the internal test-mode word.  This
+keeps the 40,383 table bytes reproducible without copying them into the
+handwritten source.
+
+### 2. Parser and Component-Rank Checkpoint
+
+The first assembly checkpoint implements the complete 14-character parser and
+the two input ranks.  It rejects out-of-range digits, duplicate cubies, an
+invalid orientation sum, and a trailing fifteenth character.  Lehmer radices
+6, 5, 4, 3, and 2 are formed only with shifts and adds.  The orientation rank
+uses the same base-three shift/add recurrence as the C reference.  The source
+contains no multiply, divide, or remainder instruction.
+
+The program validates three legal states internally:
+
+| Case | Permutation rank | Orientation rank |
+|---|---:|---:|
+| Solved | 0 | 0 |
+| One `R` turn | 1,104 | 426 |
+| Distance-11 vector | 720 | 0 |
+
+It also exercises all nine invalid-input categories used by the host tests.
+Register `x31` is set to one only after every check passes, allowing the
+Makefile to reject a failure from the Ripes JSON register report.
+
+The initial measurements are:
+
+| Ripes model | Retired instructions | Cycles |
+|---|---:|---:|
+| `RV32_ISS` | 2,628 | 2,628 |
+| `RV32_5S` | 2,627 | 3,427 |
+
+These counts cover three valid parses/ranks, nine rejected inputs, and program
+termination.  They are a correctness checkpoint, not a measurement of the
+IDA* solver.  Solver measurements begin after the assembly search and replay
+paths are connected.
+
+### 3. Functional Assembly IDA* Solver
+
+The next refinement connects the parser to the static transition and
+heuristic tables, the iterative IDA* search, and an independent replay of the
+returned path.  The search uses twelve six-byte frames and an eleven-byte
+solution buffer.  It has no recursion, dynamic allocation, or dependency on a
+runtime stack pointer.
+
+Each move selects one of the three permutation and orientation rows, follows
+the row one to three times, and loads the next component ranks with `lhu`.
+The row byte offsets 10,080, 20,160, 1,458, and 2,916 are constructed with
+`lui`, `addi`, and `add`; no multiply is hidden in address calculation.  The
+same-face pruning and smallest-rejected-bound update are the same operations
+verified by H3 in the C implementation.
+
+The production source embeds one arbitrary state at `input_state`.  It parses,
+solves, and replays that state, then leaves the solution length in `x30` and a
+pass flag in `x31`.  The generated test source instead solves the three fixed
+states, checks exact lengths 0, 1, and 11, replays every path, and rejects all
+nine invalid inputs.  Thus the distance-11 case checks both optimal length and
+the target's actual returned path rather than a pre-recorded solution.
+
+```bash
+make rv32i_solver.s
+make check-rv32i-asm
+```
+
+The default production input is the distance-11 vector.  Its `RV32_ISS`
+result was:
+
+| Retired instructions | Cycles | `x30` | `x31` |
+|---:|---:|---:|---:|
+| 18,816,530 | 18,816,530 | 11 | 1 |
+
+The complete internal regression produced:
+
+| Ripes model | Retired instructions | Cycles |
+|---|---:|---:|
+| `RV32_ISS` | 18,819,059 | 18,819,059 |
+| `RV32_5S` | 18,819,058 | 23,539,651 |
+
+Both models set `x31` to one.  The one-instruction difference is the models'
+handling of program termination; all solver and replay checks agree.  These
+results establish T5 for the embedded test paths, T6 for the known
+distance-11 vector, and cross-model agreement for the three required local
+cases.  The GCC `-O2` comparison and linked `.text` size remain open until a
+RISC-V cross-compiler is available.
