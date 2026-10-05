@@ -9,7 +9,9 @@ enum {
     ORIENTATIONS = 729,
     STATES = PERMUTATIONS * ORIENTATIONS,
     FACES = 3,
-    MOVES = 9
+    MOVES = 9,
+    MAX_SOLUTION_LENGTH = 11,
+    IDA_STACK_DEPTH = MAX_SOLUTION_LENGTH + 1
 };
 
 typedef struct {
@@ -20,6 +22,16 @@ typedef struct {
     uint16_t p;
     uint16_t o;
 } search_state_t;
+
+typedef struct {
+    uint16_t p;
+    uint16_t o;
+    uint8_t next_move;
+    uint8_t last_face;
+} ida_frame_t;
+
+typedef char ida_frame_must_fit_in_eight_bytes[
+    sizeof(ida_frame_t) <= 8 ? 1 : -1];
 
 static const char *const move_names[MOVES] = {
     "R", "R2", "R'", "B", "B2", "B'", "D", "D2", "D'"
@@ -118,7 +130,7 @@ static void unrank_state(uint32_t rank, state_t *state)
 
         state->p[i] = available[q];
 
-        for (uint8_t j = q; j + 1U < CUBIES - i; ++j)
+        for (uint8_t j = q; j + 1U < (unsigned) CUBIES - i; ++j)
             available[j] = available[j + 1U];
 
         if (i < 5)
@@ -310,6 +322,87 @@ static uint8_t heuristic(search_state_t state)
     uint8_t ho = ori_dist[state.o];
 
     return hp > ho ? hp : ho;
+}
+
+/*
+ * Run an IDA* search without recursion or heap allocation.
+ *
+ * Each threshold iteration is a depth-first traversal represented by a fixed
+ * stack.  Consecutive turns of the same face are skipped because they can
+ * always be combined into one HTM move or cancel completely.
+ */
+static int ida_star(search_state_t start, uint8_t *solution,
+                    uint8_t *solution_length)
+{
+    ida_frame_t stack[IDA_STACK_DEPTH];
+    uint8_t bound = heuristic(start);
+
+    if (start.p == 0 && start.o == 0) {
+        *solution_length = 0;
+        return 1;
+    }
+
+    while (bound <= MAX_SOLUTION_LENGTH) {
+        uint8_t depth = 0;
+        uint8_t next_bound = UINT8_MAX;
+
+        stack[0].p = start.p;
+        stack[0].o = start.o;
+        stack[0].next_move = 0;
+        stack[0].last_face = FACES;
+
+        for (;;) {
+            ida_frame_t *frame = &stack[depth];
+
+            if (frame->next_move == MOVES) {
+                if (depth == 0)
+                    break;
+
+                --depth;
+                continue;
+            }
+
+            uint8_t move = frame->next_move++;
+            uint8_t face = (uint8_t) (move / 3U);
+
+            if (face == frame->last_face)
+                continue;
+
+            search_state_t next = {frame->p, frame->o};
+            next = apply_search_move(next, move);
+
+            uint8_t next_depth = (uint8_t) (depth + 1U);
+            uint8_t estimate =
+                (uint8_t) (next_depth + heuristic(next));
+
+            if (estimate > bound) {
+                if (estimate < next_bound)
+                    next_bound = estimate;
+
+                continue;
+            }
+
+            solution[depth] = move;
+
+            if (next.p == 0 && next.o == 0) {
+                *solution_length = next_depth;
+                return 1;
+            }
+
+            stack[next_depth].p = next.p;
+            stack[next_depth].o = next.o;
+            stack[next_depth].next_move = 0;
+            stack[next_depth].last_face = face;
+            depth = next_depth;
+        }
+
+        if (next_bound == UINT8_MAX)
+            return 0;
+
+        bound = next_bound;
+    }
+
+    return 0;
 }
 
 /*
@@ -591,35 +684,109 @@ static int test_heuristic_admissibility(const uint8_t *exact_distance)
     return 1;
 }
 
+/*
+ * Exercise IDA* at several depths, including the HTM diameter.  Expected
+ * depths come from independently generated exact BFS distances.  Replaying
+ * every returned path against the physical state model checks that the moves
+ * really solve the input rather than merely satisfying the compact model.
+ */
+static int test_ida_star(void)
+{
+    static const struct {
+        const char *input;
+        uint8_t expected_depth;
+    } cases[] = {
+        {"12345671111111", 0},
+        {"62345713133111", 8},
+        {"24513763133333", 9},
+        {"25416373331111", 10},
+        {"21345671111111", 11},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        state_t state;
+        uint8_t solution[MAX_SOLUTION_LENGTH];
+        uint8_t length;
+
+        if (!parse_state(cases[i].input, &state)) {
+            fprintf(stderr, "IDA* test has invalid input: %s\n",
+                    cases[i].input);
+            return 0;
+        }
+
+        if (!ida_star(encode_search_state(&state), solution, &length)) {
+            fprintf(stderr, "IDA* failed to solve %s\n", cases[i].input);
+            return 0;
+        }
+
+        if (length != cases[i].expected_depth) {
+            fprintf(stderr,
+                    "IDA* depth mismatch for %s: got %u, expected %u\n",
+                    cases[i].input, length, cases[i].expected_depth);
+            return 0;
+        }
+
+        for (uint8_t move_index = 0; move_index < length; ++move_index) {
+            uint8_t move = solution[move_index];
+
+            if (move >= MOVES) {
+                fprintf(stderr,
+                        "IDA* returned invalid move %u for %s\n",
+                        move, cases[i].input);
+                return 0;
+            }
+
+            if (move_index > 0 &&
+                solution[move_index - 1U] / 3U == move / 3U) {
+                fprintf(stderr,
+                        "IDA* returned consecutive same-face moves for %s\n",
+                        cases[i].input);
+                return 0;
+            }
+
+            state = apply_move(state, move);
+        }
+
+        if (rank_state(&state) != 0) {
+            fprintf(stderr, "IDA* path did not solve %s\n", cases[i].input);
+            return 0;
+        }
+    }
+
+    printf("IDA*: solved %u known-distance cases (depths 0 through 11)\n",
+           (unsigned) (sizeof cases / sizeof cases[0]));
+    return 1;
+}
+
 static int self_test(int exhaustive_transitions)
 {
     uint8_t diameter;
 
-    puts("[1/6] move inverse");
+    puts("[1/7] move inverse");
     if (!test_move_inverse())
         return 0;
 
-    puts("[2/6] rank/unrank");
+    puts("[2/7] rank/unrank");
     if (!test_rank_roundtrip())
         return 0;
 
-    puts("[3/6] transition bounds");
+    puts("[3/7] transition bounds");
     if (!test_transition_bounds())
         return 0;
 
     if (exhaustive_transitions)
-        puts("[4/6] exhaustive transition equivalence");
+        puts("[4/7] exhaustive transition equivalence");
     else
-        puts("[4/6] sampled transition equivalence");
+        puts("[4/7] sampled transition equivalence");
 
     if (!test_transition_equivalence(exhaustive_transitions))
         return 0;
 
-    puts("[5/6] H2 heuristic table sanity");
+    puts("[5/7] H2 heuristic table sanity");
     if (!test_heuristic_tables())
         return 0;
 
-    puts("[6/6] H1 heuristic admissibility");
+    puts("[6/7] H1 heuristic admissibility");
 
     uint8_t *exact_distance = malloc(STATES);
 
@@ -655,6 +822,10 @@ static int self_test(int exhaustive_transitions)
     free(table);
     free(exact_distance);
 
+    puts("[7/7] IDA* known-distance solutions");
+    if (!test_ida_star())
+        return 0;
+
     puts("all tests passed");
     return 1;
 }
@@ -662,10 +833,8 @@ static int self_test(int exhaustive_transitions)
 int main(int argc, char **argv)
 {
     /*
-     * Commit 2 still generates transitions and heuristics at runtime
-     * on the native host.
-     *
-     * A later commit will turn these into host-generated const tables.
+     * This stage still generates transitions and heuristics at runtime.
+     * A later commit will turn them into host-generated const tables.
      */
     build_transition_tables();
     build_heuristic_tables();
@@ -692,39 +861,27 @@ int main(int argc, char **argv)
 
     if (argc != 2 || !parse_state(argv[1], &state)) {
         fprintf(stderr, "usage: %s PPPPPPPOOOOOOO\n",
-                argc > 0 && argv[0] ? argv[0] : "solver");
+                argc > 0 && argv[0] ? argv[0] : "my_solver");
         return 2;
     }
 
-    /*
-     * The query path is deliberately still the baseline solver.
-     *
-     * IDA* is introduced in the next commit.
-     */
-    uint8_t diameter;
-    uint8_t *table = build_table(&diameter, NULL);
+    search_state_t search = encode_search_state(&state);
+    uint8_t solution[MAX_SOLUTION_LENGTH];
+    uint8_t solution_length;
 
-    if (!table) {
-        fputs("could not build complete state table\n", stderr);
+    if (!ida_star(search, solution, &solution_length)) {
+        fputs("IDA* search failed\n", stderr);
         return 1;
     }
 
     const char *separator = "";
 
-    for (uint32_t rank = rank_state(&state);
-         rank;
-         rank = rank_state(&state)) {
-
-        uint8_t move = table[rank];
-
+    for (uint8_t i = 0; i < solution_length; ++i) {
+        uint8_t move = solution[i];
         printf("%s%s", separator, move_names[move]);
         separator = " ";
-
-        state = apply_move(state, move);
     }
 
     putchar('\n');
-
-    free(table);
     return output_failed();
 }
