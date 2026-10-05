@@ -560,7 +560,11 @@ $$
 
 ## Stage 3
 
-My Evolutionary Process
+### 1. Implementation Strategy in C
+
+The C implementation was developed as a sequence of independently testable
+changes while preserving the same cube model and command-line interface.
+
 ```
 baseline
    ↓
@@ -582,3 +586,282 @@ RV32I instruction optimization
    ↓
 LED matrix visualization
 ```
+
+This stage ends at `RV32I-oriented C optimization`; assembly and Ripes
+`--iret` measurements belong to the next stage.
+
+### 2. Factored Search State and Transitions
+
+The complete rank is useful for enumerating all states during host-side tests,
+but IDA* keeps the two components separate:
+
+```c
+typedef struct {
+    uint16_t p;
+    uint16_t o;
+} search_state_t;
+```
+
+Here, `p < 5040` and `o < 729`.  Since moves update these components
+independently, the target only needs three quarter-turn tables:
+
+```c
+permutation[3][5040]
+orientation[3][729]
+```
+
+`R2` and `R'` follow the corresponding quarter-turn table two and three times.
+Each step reads one 16-bit entry from each table, so no physical cubie arrays
+or ranking operations are needed in the search loop.  Exhaustive tests compare
+all table-based moves with the original `source` and `twist` model, confirming
+that factoring preserves the complete transition system.
+
+### 3. Heuristic Tables and H1/H2
+
+The host generator uses reverse BFS to build:
+
+```c
+perm_dist[5040]
+ori_dist[729]
+```
+
+The target evaluates:
+
+$$
+h(p,o)=\max(perm\_dist[p],ori\_dist[o]).
+$$
+
+It costs two byte loads and one comparison.  H1 compares it with the baseline
+BFS distance for all states:
+
+$$
+h(p,o)\le d_{BFS}(p,o).
+$$
+
+```text
+H1: checked 3674160 states
+H1: maximum heuristic = 7
+H1: exact on 17108 states
+```
+
+H2 verifies that the solved entries are zero and that every abstract state was
+visited:
+
+```text
+H2: permutation heuristic max = 7
+H2: orientation heuristic max = 6
+```
+
+Thus the tables are complete and the combined heuristic is admissible.
+
+### 4. Iterative IDA* Implementation
+
+IDA* starts with `bound = h(start)`, prunes when `g + h > bound`, and uses the
+smallest rejected value as the next bound.  Recursion is replaced with 12
+fixed frames: one root plus at most 11 moves.
+
+```c
+typedef struct {
+    uint16_t p;
+    uint16_t o;
+    uint8_t next_move;
+    uint8_t last_face;
+    uint8_t padding[2];
+} ida_frame_t;
+```
+
+Each frame is exactly 8 bytes, so the DFS stack occupies:
+
+$$
+12\times8=96\text{ bytes}.
+$$
+
+Moves of the same face are not generated consecutively.  Any such pair either
+cancels or can be replaced by one HTM move, so this pruning does not remove an
+optimal solution.  The non-root branching factor falls from nine to six.  The
+search uses neither heap allocation nor recursion.
+
+### 5. Full Correctness Test — H3
+
+H3 runs IDA* once for every dense state rank and checks both optimal length and
+the returned path:
+
+```text
+for rank in [0, 3674160):
+    start = split_rank(rank)
+    solution = ida_star(start)
+
+    assert solution.length == exact_distance[rank]
+    assert replay(start, solution) == solved
+```
+
+```text
+H3: IDA* matched exact BFS distances for 3674160 states
+all tests passed
+```
+
+Since BFS supplies exact HTM distances, this verifies optimality for every
+valid state and also exercises threshold changes, pruning, and stack
+backtracking.
+
+### 6. Static Precomputation
+
+`generate_tables.c` builds the four tables on the host and emits
+`static_tables.h`.  Normal builds include these `static const` arrays and no
+longer contain runtime table builders.  `HOSTCC` is separate from target `CC`,
+and the generated data is reproducible with:
+
+```bash
+make check-static
+```
+
+The core tables occupy:
+
+$$
+34,614+5,769=40,383\text{ bytes}.
+$$
+
+The measured native ELF section sizes after the final C changes were:
+
+| Section | Bytes |
+|---|---:|
+| `.rodata` | 42,433 |
+| `.data.rel.ro` | 232 |
+| `.data` | 16 |
+| `.bss` | 48 |
+| **Total static sections** | **42,729** |
+
+The complete static sections therefore use:
+
+$$
+\frac{42,729}{131,072}\times100\%\approx32.6\%
+$$
+
+of the 128 KiB budget.  The textual header size is irrelevant to target memory;
+its initializers compile into the table bytes above.
+
+### 7. RV32I-Oriented C Optimization
+
+RV32I has no multiplication, division, or remainder instructions.  The C code
+was therefore restructured so the normal solve path uses table lookup,
+shift/add, and comparison instead of software arithmetic helpers.
+
+#### 7.1 Move Decoding
+
+Move decoding changed from:
+
+```c
+face = move / 3;
+turns = move % 3 + 1;
+```
+
+to two nine-byte tables:
+
+```c
+face = move_face[move];
+turns = move_turns[move];
+```
+
+Face pointer tables also select transition rows without multiplying by 5,040
+or 729.
+
+#### 7.2 Direct Component Encoding
+
+The earlier input path constructed and immediately split a dense rank:
+
+```text
+rank = p * 729 + o
+p = rank / 729
+o = rank % 729
+```
+
+The new path computes `p` and `o` directly.  Fixed Lehmer radices use
+shift/add, as does base-3 orientation accumulation:
+
+```c
+o = (o << 1) + o + digit;
+```
+
+Dense-rank division remains only in host generation and exhaustive tests.
+
+#### 7.3 Modulo and Input Parsing
+
+Corner twist `% 3` became a comparison and possible subtraction.  Splitting
+the parser into two seven-character loops also removes its `i % 7` indexing.
+
+#### 7.4 Combined Transition Loop
+
+Permutation and orientation previously used separate loops.  Combining them
+keeps the required `2t` table reads for `t` quarter turns but halves the
+loop-control sequences:
+
+```c
+do {
+    state.p = p_table[state.p];
+    state.o = o_table[state.o];
+} while (--turns != 0);
+```
+
+#### 7.5 Stack Addressing and Successful-Node Path
+
+The original six-byte frame required scaled indexing.  An eight-byte frame and
+a frame pointer reduce push/pop to:
+
+```text
+push: ++frame
+pop:  --frame
+```
+
+This spends 24 extra stack bytes, increasing 12 frames from 72 to 96 bytes.
+Checking solved before the heuristic also skips two byte loads, the maximum,
+and the threshold comparison on the successful child.
+
+#### 7.6 Operation-Count Summary
+
+These are C-level hot-path counts.  Compiler effects and target performance
+will be measured with Ripes after assembly translation.
+
+| Operation | Before | After |
+|---|---|---|
+| Decode move face | Division by 3 | Byte-table lookup |
+| Decode turn count | Remainder by 3 plus one | Byte-table lookup |
+| Encode input state | Dense rank followed by `/729` and `%729` | Direct component ranks |
+| Orientation reduction | `%3` | Compare/subtract |
+| Parse destination index | `i % 7` | Two fixed loops |
+| Transition table reads for `t` turns | `2t` | `2t` |
+| Transition loop-control sequences | Two per turn | One per turn |
+| DFS frame addressing | Six-byte indexed stride | Eight-byte pointer increment/decrement |
+| Successful child heuristic | Two loads plus max and comparison | Skipped |
+
+### 8. C-Level Regression Results
+
+The full H3 run was timed before and after the RV32I-oriented rewrite on the
+same native installation:
+
+| Version | H3 wall time | Peak RSS |
+|---|---:|---:|
+| Static precomputation, before RV32I C rewrite | 235.27 s | 22,988 KiB |
+| RV32I-oriented C rewrite | 225.27 s | 23,112 KiB |
+
+The native wall-time improvement was approximately:
+
+$$
+\frac{235.27-225.27}{235.27}\times100\%\approx4.3\%.
+$$
+
+This is only a regression trend: x86-64 optimizes constant division differently
+from RV32I, so it is not a target-speed claim.  All transition, H1/H2/H3,
+known-depth, sanitizer, invalid-input, and output-error tests still passed.
+
+The principal checks can be reproduced with:
+
+```bash
+make check-static       # regenerate tables and run H1/H2 plus sampled transitions
+make check-ida          # normal IDA* self-test
+make check-h3           # exhaustive transitions and all-state IDA*/BFS comparison
+size -A my_solver       # inspect static ELF sections
+```
+
+`make check-h3` takes about four minutes on this installation because it runs a
+fresh IDA* search for every state.
+
