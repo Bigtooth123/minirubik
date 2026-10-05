@@ -7,6 +7,7 @@ CLANG_FORMAT := $(shell command -v clang-format-20 2>/dev/null || \
 	command -v clang-format 2>/dev/null)
 C_SOURCES := $(filter-out static_tables.h,$(wildcard *.c *.h))
 TABLE_GENERATOR := generate_tables
+RV32I_TABLES := static_tables_rv32i.inc
 SAMPLE_STATE := 21345671111111
 SAMPLE_SOLUTION := B' R' D2 R' B R B' R D2 B R'
 VECTORS := tests/solutions.txt
@@ -35,8 +36,13 @@ static_tables.h: $(TABLE_GENERATOR)
 	./$(TABLE_GENERATOR) >$@.tmp
 	mv $@.tmp $@
 
-check-static: my_solver $(TABLE_GENERATOR)
+$(RV32I_TABLES): $(TABLE_GENERATOR)
+	./$(TABLE_GENERATOR) --asm >$@.tmp
+	mv $@.tmp $@
+
+check-static: my_solver $(TABLE_GENERATOR) $(RV32I_TABLES)
 	./$(TABLE_GENERATOR) | cmp - static_tables.h
+	./$(TABLE_GENERATOR) --asm | cmp - $(RV32I_TABLES)
 	./my_solver --self-test
 
 check-ida: my_solver
@@ -117,4 +123,5 @@ endif
 	$(CLANG_FORMAT) -i $(C_SOURCES)
 
 clean:
-	$(RM) solver mini my_solver $(TABLE_GENERATOR) static_tables.h.tmp
+	$(RM) solver mini my_solver $(TABLE_GENERATOR) static_tables.h.tmp \
+		$(RV32I_TABLES).tmp
