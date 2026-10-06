@@ -8,6 +8,11 @@ generate_tables
 rv32i_reference
 rv32i_reference_target
 rv32i_reference_tests
-rv32i_solver.s
-rv32i_solver_tests.s
+/rv32i_solver.s
+/rv32i_solver_tests.s
+/rv32i_reference_rv32i.o
+/rv32i_reference_start.o
+/rv32i_reference_rv32i.elf
+/rv32i_solver_rv32i.o
+/rv32i_solver_rv32i.elf
 Ripes-v2.2.6-106-g5b8a616-linux-x86_64.AppImage

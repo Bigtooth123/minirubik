@@ -879,18 +879,36 @@ the host BFS and table builders remain in `my_solver.c`.  The reference has a
 host command-line build, a freestanding single-input build, and a freestanding
 three-case test build.
 
-The pinned Ripes AppImage reports `No C compiler set` for `-t c`, and no
-RISC-V GCC is installed on this machine.  Consequently, the required
-`riscv64-unknown-elf-gcc -O2 -march=rv32i -mabi=ilp32` code-size and instruction
-baseline is still pending.  Ripes is used here only as the assembler and
-simulator; no C-to-assembly performance claim is made yet.
+The pinned Ripes AppImage reports `No C compiler set` for `-t c`, so the C
+reference is compiled separately with `riscv64-unknown-elf-gcc` 13.2.0 and GNU
+ld 2.42.  Ripes then runs the linked ELF, making its instruction and cycle
+counts directly comparable with the hand-written assembly ELF.
 
-Ripes consumes one assembly source in CLI mode.  The Makefile therefore joins
-the maintained `rv32i_solver_core.s` with the generated
-`static_tables_rv32i.inc` to produce `rv32i_solver.s`.  A second generated
-source, `rv32i_solver_tests.s`, changes only the internal test-mode word.  This
-keeps the 40,383 table bytes reproducible without copying them into the
-handwritten source.
+The maintained assembly is split by responsibility:
+
+| Source | Responsibility |
+|---|---|
+| `rv32i_solver_core.s` | Parser/ranker, iterative IDA*, move application, solution replay, and fixed search storage |
+| `rv32i_solver_main.s` | Production input, `main`, result length in `x30`, and pass flag in `x31` |
+| `tests/rv32i_solver_tests.s` | Three valid cases, nine invalid cases, expected ranks and lengths, and the regression-test `main` |
+
+The core deliberately contains neither an entry point nor the generated
+tables, so none of these maintained files is a complete stand-alone Ripes
+program.  Ripes consumes one assembly source in CLI mode, so the Makefile
+constructs the two complete inputs as follows:
+
+```text
+static_tables_rv32i.inc + rv32i_solver_main.s + rv32i_solver_core.s
+    -> rv32i_solver.s
+
+static_tables_rv32i.inc + tests/rv32i_solver_tests.s + rv32i_solver_core.s
+    -> rv32i_solver_tests.s
+```
+
+This keeps the 40,383 table bytes reproducible without copying them into the
+handwritten source, and excludes test code and strings from the production
+build.  The two combined `.s` files are generated artifacts and are not
+committed.
 
 ### 2. Parser and Component-Rank Checkpoint
 
@@ -947,28 +965,114 @@ states, checks exact lengths 0, 1, and 11, replays every path, and rejects all
 nine invalid inputs.  Thus the distance-11 case checks both optimal length and
 the target's actual returned path rather than a pre-recorded solution.
 
+The complete sources for manual use in Ripes are generated with:
+
 ```bash
-make rv32i_solver.s
-make check-rv32i-asm
+make rv32i_solver.s rv32i_solver_tests.s
 ```
+
+`rv32i_solver.s` runs the production input; `rv32i_solver_tests.s` runs the
+complete internal regression.  The latter can also be executed automatically
+on both processor models with `make check-rv32i-asm`.  At this stage the
+observable outputs are registers and performance counters: no LED-matrix MMIO
+has been added yet.
 
 The default production input is the distance-11 vector.  Its `RV32_ISS`
 result was:
 
 | Retired instructions | Cycles | `x30` | `x31` |
 |---:|---:|---:|---:|
-| 18,816,530 | 18,816,530 | 11 | 1 |
+| 18,816,526 | 18,816,526 | 11 | 1 |
 
 The complete internal regression produced:
 
 | Ripes model | Retired instructions | Cycles |
 |---|---:|---:|
-| `RV32_ISS` | 18,819,059 | 18,819,059 |
-| `RV32_5S` | 18,819,058 | 23,539,651 |
+| `RV32_ISS` | 18,819,055 | 18,819,055 |
+| `RV32_5S` | 18,819,054 | 23,539,644 |
 
 Both models set `x31` to one.  The one-instruction difference is the models'
 handling of program termination; all solver and replay checks agree.  These
 results establish T5 for the embedded test paths, T6 for the known
 distance-11 vector, and cross-model agreement for the three required local
-cases.  The GCC `-O2` comparison and linked `.text` size remain open until a
-RISC-V cross-compiler is available.
+cases.
+
+### 4. GCC Baseline and Measured Assembly Improvement
+
+The comparison uses complete freestanding programs rather than isolated
+functions.  Because `-nostdlib` removes the operating-system and C-runtime
+startup code, the compiled C program cannot safely start at `main` by itself.
+`rv32i_reference_start.s` supplies the missing minimum: `_start` initializes a
+512-byte stack, calls the C `main`, converts return value zero into the same
+`x31 = 1` pass flag, and terminates through the Ripes environment call.  It is
+only a startup wrapper for the GCC baseline; the handwritten solver does not
+use it or a runtime stack.
+
+Compilation and linking produce these two comparable executables:
+
+```text
+rv32i_reference.c -> rv32i_reference_rv32i.o
+rv32i_reference_start.s -> rv32i_reference_start.o
+    -> rv32i_reference_rv32i.elf
+
+rv32i_solver.s -> rv32i_solver_rv32i.o
+    -> rv32i_solver_rv32i.elf
+```
+
+An `.o` file is relocatable machine code whose addresses and external symbols
+have not yet been resolved; it is an intermediate file, not the final Ripes
+program.  An `.elf` is the linked executable with its entry point, code, data,
+and tables laid out.  The two ELFs are what `measure-rv32i` executes for the
+GCC-versus-handwritten comparison.  All `.o` and `.elf` files above are
+reproducible, ignored by Git, and removed by `make clean`.
+
+Both programs are linked with relaxation disabled so that the linker cannot
+replace instruction sequences differently:
+
+```text
+-O2 -march=rv32i -mabi=ilp32 -ffreestanding -fno-stack-protector
+-nostdlib -Wl,--no-relax
+```
+
+`make check-rv32i-binaries` also rejects undefined symbols and scans both
+disassemblies for `mul`, `mulh`, `div`, and `rem` variants.  This catches a
+compiler runtime dependency or an accidental RV32M instruction before any
+measurement is accepted.  The linked section sizes were:
+
+| Program | `.text` | Static tables/data | Extra stack |
+|---|---:|---:|---:|
+| GCC `-O2` C reference | 1,360 bytes | 40,452-byte `.rodata` | 512-byte `.bss` |
+| Hand-written assembly | 1,172 bytes | 40,520-byte `.data` | none |
+
+The hand-written program therefore removes 188 bytes, or 13.8%, from the
+complete executable code.  Its search state is the fixed 72-byte frame array
+and 11-byte solution buffer already included in `.data`; it does not need the
+C program's runtime stack.
+
+Both ELFs solved and replayed the same distance-11 input, and both left
+`x31 = 1`.  Ripes `--iret --cycles` reported:
+
+| Model | Program | Retired instructions | Cycles |
+|---|---|---:|---:|
+| `RV32_ISS` | GCC `-O2` C | 22,535,660 | 22,535,660 |
+| `RV32_ISS` | Hand-written assembly | 18,816,526 | 18,816,526 |
+| `RV32_5S` | GCC `-O2` C | 22,535,659 | 26,208,610 |
+| `RV32_5S` | Hand-written assembly | 18,816,525 | 23,536,381 |
+
+Relative to GCC, the assembly retires 3,719,134 fewer instructions, a 16.5%
+reduction.  On the five-stage pipeline it uses 2,672,229 fewer cycles, a 10.2%
+reduction.  The smaller cycle reduction is consistent with pipeline hazards:
+removing an instruction does not necessarily remove a stall or a control
+penalty.
+
+The build and measurement are reproducible with:
+
+```bash
+make check-rv32i-binaries
+make measure-rv32i
+```
+
+`RISCV_PREFIX=/path/to/riscv64-unknown-elf-` may be supplied when the cross
+tools are not installed on `PATH`.  `measure-rv32i` builds both ELFs, checks
+their pass flags, and runs both `RV32_ISS` and `RV32_5S` with the pinned Ripes
+AppImage.

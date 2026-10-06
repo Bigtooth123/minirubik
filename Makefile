@@ -5,6 +5,14 @@ HOSTCFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wpedantic
 RV32I_CFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wpedantic \
 	-fno-stack-protector
 RV32I_TARGET_CFLAGS ?= $(RV32I_CFLAGS) -ffreestanding
+RISCV_PREFIX ?= riscv64-unknown-elf-
+RISCV_CC ?= $(RISCV_PREFIX)gcc
+RISCV_NM ?= $(RISCV_PREFIX)nm
+RISCV_OBJDUMP ?= $(RISCV_PREFIX)objdump
+RISCV_SIZE ?= $(RISCV_PREFIX)size
+RV32I_ARCH_FLAGS := -march=rv32i -mabi=ilp32
+RV32I_GCC_FLAGS := -O2 $(RV32I_ARCH_FLAGS) -std=c99 -Wall -Wextra \
+	-Wpedantic -ffreestanding -fno-stack-protector
 FRAMA_C ?= frama-c
 CLANG_FORMAT := $(shell command -v clang-format-20 2>/dev/null || \
 	command -v clang-format 2>/dev/null)
@@ -15,8 +23,15 @@ RV32I_REFERENCE := rv32i_reference
 RV32I_TARGET_REFERENCE := rv32i_reference_target
 RV32I_TARGET_TESTS := rv32i_reference_tests
 RV32I_ASM_CORE := rv32i_solver_core.s
+RV32I_ASM_MAIN := rv32i_solver_main.s
+RV32I_ASM_TEST_HARNESS := tests/rv32i_solver_tests.s
 RV32I_ASM := rv32i_solver.s
 RV32I_ASM_TEST := rv32i_solver_tests.s
+RV32I_REFERENCE_OBJECT := rv32i_reference_rv32i.o
+RV32I_REFERENCE_START_OBJECT := rv32i_reference_start.o
+RV32I_REFERENCE_ELF := rv32i_reference_rv32i.elf
+RV32I_ASM_OBJECT := rv32i_solver_rv32i.o
+RV32I_ASM_ELF := rv32i_solver_rv32i.elf
 RIPES ?= ./Ripes-v2.2.6-106-g5b8a616-linux-x86_64.AppImage
 RIPES_RUN ?= APPIMAGE_EXTRACT_AND_RUN=1 $(RIPES)
 RIPES_TIMEOUT ?= 120000
@@ -29,7 +44,7 @@ INVALID_STATES := 1234567111111 123456711111111 02345671111111 82345671111111 \
 	12345671111110 12345671111114 1234567111111a 11345671111111 12345671111112
 
 .PHONY: all check check-ida check-h3 check-static check-rv32i-c \
-	check-rv32i-asm prove clean indent
+	check-rv32i-asm check-rv32i-binaries measure-rv32i prove clean indent
 
 all: solver mini
 
@@ -62,15 +77,34 @@ $(RV32I_TABLES): $(TABLE_GENERATOR)
 	./$(TABLE_GENERATOR) --asm >$@.tmp
 	mv $@.tmp $@
 
-$(RV32I_ASM): $(RV32I_ASM_CORE) $(RV32I_TABLES) Makefile
-	cat $(RV32I_TABLES) $(RV32I_ASM_CORE) >$@.tmp
+$(RV32I_ASM): $(RV32I_ASM_CORE) $(RV32I_ASM_MAIN) \
+		$(RV32I_TABLES) Makefile
+	cat $(RV32I_TABLES) $(RV32I_ASM_MAIN) $(RV32I_ASM_CORE) >$@.tmp
 	mv $@.tmp $@
 
-$(RV32I_ASM_TEST): $(RV32I_ASM_CORE) $(RV32I_TABLES) Makefile
-	cat $(RV32I_TABLES) >$@.tmp
-	sed 's/\.word 0 # TEST_MODE/.word 1 # TEST_MODE/' \
-		$(RV32I_ASM_CORE) >>$@.tmp
+$(RV32I_ASM_TEST): $(RV32I_ASM_CORE) $(RV32I_ASM_TEST_HARNESS) \
+		$(RV32I_TABLES) Makefile
+	cat $(RV32I_TABLES) $(RV32I_ASM_TEST_HARNESS) \
+		$(RV32I_ASM_CORE) >$@.tmp
 	mv $@.tmp $@
+
+$(RV32I_REFERENCE_OBJECT): rv32i_reference.c static_tables.h
+	$(RISCV_CC) $(RV32I_GCC_FLAGS) -DRV32I_TARGET -c $< -o $@
+
+$(RV32I_REFERENCE_START_OBJECT): rv32i_reference_start.s
+	$(RISCV_CC) $(RV32I_ARCH_FLAGS) -c $< -o $@
+
+$(RV32I_REFERENCE_ELF): $(RV32I_REFERENCE_START_OBJECT) \
+		$(RV32I_REFERENCE_OBJECT)
+	$(RISCV_CC) -nostdlib $(RV32I_ARCH_FLAGS) -Wl,--no-relax \
+		-Wl,-e,_start $^ -o $@
+
+$(RV32I_ASM_OBJECT): $(RV32I_ASM)
+	$(RISCV_CC) $(RV32I_ARCH_FLAGS) -c $< -o $@
+
+$(RV32I_ASM_ELF): $(RV32I_ASM_OBJECT)
+	$(RISCV_CC) -nostdlib $(RV32I_ARCH_FLAGS) -Wl,--no-relax \
+		-Wl,-e,main $< -o $@
 
 check-static: my_solver $(TABLE_GENERATOR) $(RV32I_TABLES)
 	./$(TABLE_GENERATOR) | cmp - static_tables.h
@@ -129,6 +163,44 @@ check-rv32i-asm: $(RV32I_ASM_TEST)
 		grep -E 'instructions retired|"cycles"' "$$output"; \
 		rm -f "$$output"; \
 		trap - 0 1 2 15; \
+	done
+
+check-rv32i-binaries: $(RV32I_REFERENCE_ELF) $(RV32I_ASM_ELF)
+	@test -z "$$($(RISCV_NM) -u $(RV32I_REFERENCE_ELF))"
+	@test -z "$$($(RISCV_NM) -u $(RV32I_ASM_ELF))"
+	@for binary in $(RV32I_REFERENCE_ELF) $(RV32I_ASM_ELF); do \
+		if $(RISCV_OBJDUMP) -d "$$binary" | \
+			grep -Eq '(^|[[:space:]])(mul|mulh|mulhu|mulhsu|div|divu|rem|remu)([[:space:]]|$$)'; then \
+			echo "$$binary contains a non-RV32I arithmetic instruction"; \
+			exit 1; \
+		fi; \
+	done
+	$(RISCV_SIZE) -A $(RV32I_REFERENCE_ELF)
+	$(RISCV_SIZE) -A $(RV32I_ASM_ELF)
+
+measure-rv32i: check-rv32i-binaries
+	@set -e; \
+	for processor in RV32_ISS RV32_5S; do \
+		for binary in $(RV32I_REFERENCE_ELF) $(RV32I_ASM_ELF); do \
+			output=$$(mktemp); \
+			trap 'rm -f "$$output"' 0 1 2 15; \
+			if ! $(RIPES_RUN) --mode cli --src "$$binary" -t elf \
+				--proc $$processor --timeout $(RIPES_TIMEOUT) --iret \
+				--cycles --regs --json >"$$output" 2>&1; then \
+				cat "$$output"; \
+				echo "$$processor $$binary: Ripes execution failed"; \
+				exit 1; \
+			fi; \
+			grep -q '"x31": 1' "$$output" || { \
+				cat "$$output"; \
+				echo "$$processor $$binary: validation failed"; \
+				exit 1; \
+			}; \
+			echo "$$processor $$binary"; \
+			grep -E 'instructions retired|"cycles"' "$$output"; \
+			rm -f "$$output"; \
+			trap - 0 1 2 15; \
+		done; \
 	done
 
 check: solver mini $(VECTORS)
@@ -206,4 +278,6 @@ clean:
 	$(RM) solver mini my_solver $(TABLE_GENERATOR) $(RV32I_REFERENCE) \
 		$(RV32I_TARGET_REFERENCE) $(RV32I_TARGET_TESTS) \
 		$(RV32I_ASM) $(RV32I_ASM_TEST) static_tables.h.tmp \
+		$(RV32I_REFERENCE_OBJECT) $(RV32I_REFERENCE_START_OBJECT) \
+		$(RV32I_REFERENCE_ELF) $(RV32I_ASM_OBJECT) $(RV32I_ASM_ELF) \
 		$(RV32I_TABLES).tmp $(RV32I_ASM).tmp $(RV32I_ASM_TEST).tmp
