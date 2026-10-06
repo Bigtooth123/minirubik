@@ -18,27 +18,30 @@ CLANG_FORMAT := $(shell command -v clang-format-20 2>/dev/null || \
 	command -v clang-format 2>/dev/null)
 C_SOURCES := $(filter-out static_tables.h,$(wildcard *.c *.h))
 TABLE_GENERATOR := generate_tables
-RV32I_TABLES := static_tables_rv32i.inc
+RV32I_SOURCE_DIR := asm
+RV32I_TEST_DIR := $(RV32I_SOURCE_DIR)/tests
+RV32I_BUILD_DIR := build/rv32i
+RV32I_TABLES := $(RV32I_SOURCE_DIR)/static_tables_rv32i.inc
 RV32I_REFERENCE := rv32i_reference
 RV32I_TARGET_REFERENCE := rv32i_reference_target
 RV32I_TARGET_TESTS := rv32i_reference_tests
-RV32I_ASM_CORE := rv32i_solver_core.s
-RV32I_ASM_MAIN := rv32i_solver_main.s
-RV32I_ASM_TEST_HARNESS := tests/rv32i_solver_tests.s
-RV32I_ASM_LED_MAIN := rv32i_solver_led_main.s
-RV32I_LED_RENDERER := rv32i_led_renderer.s
-RV32I_LED_TEST_HARNESS := tests/rv32i_led_tests.s
-RV32I_LED_MMIO_STUB := tests/rv32i_led_mmio_stub.s
-RV32I_ASM := rv32i_solver.s
-RV32I_ASM_TEST := rv32i_solver_tests.s
-RV32I_ASM_LED := rv32i_solver_led.s
-RV32I_LED_TEST := rv32i_led_tests.s
-RV32I_LED_SMOKE := rv32i_led_smoke.s
-RV32I_REFERENCE_OBJECT := rv32i_reference_rv32i.o
-RV32I_REFERENCE_START_OBJECT := rv32i_reference_start.o
-RV32I_REFERENCE_ELF := rv32i_reference_rv32i.elf
-RV32I_ASM_OBJECT := rv32i_solver_rv32i.o
-RV32I_ASM_ELF := rv32i_solver_rv32i.elf
+RV32I_ASM_CORE := $(RV32I_SOURCE_DIR)/rv32i_solver_core.s
+RV32I_ASM_MAIN := $(RV32I_SOURCE_DIR)/rv32i_solver_main.s
+RV32I_ASM_TEST_HARNESS := $(RV32I_TEST_DIR)/rv32i_solver_tests.s
+RV32I_ASM_LED_MAIN := $(RV32I_SOURCE_DIR)/rv32i_solver_led_main.s
+RV32I_LED_RENDERER := $(RV32I_SOURCE_DIR)/rv32i_led_renderer.s
+RV32I_LED_TEST_HARNESS := $(RV32I_TEST_DIR)/rv32i_led_tests.s
+RV32I_LED_MMIO_STUB := $(RV32I_TEST_DIR)/rv32i_led_mmio_stub.s
+RV32I_ASM := $(RV32I_BUILD_DIR)/rv32i_solver.s
+RV32I_ASM_TEST := $(RV32I_BUILD_DIR)/rv32i_solver_tests.s
+RV32I_ASM_LED := $(RV32I_BUILD_DIR)/rv32i_solver_led.s
+RV32I_LED_TEST := $(RV32I_BUILD_DIR)/rv32i_led_tests.s
+RV32I_LED_SMOKE := $(RV32I_BUILD_DIR)/rv32i_led_smoke.s
+RV32I_REFERENCE_OBJECT := $(RV32I_BUILD_DIR)/rv32i_reference_rv32i.o
+RV32I_REFERENCE_START_OBJECT := $(RV32I_BUILD_DIR)/rv32i_reference_start.o
+RV32I_REFERENCE_ELF := $(RV32I_BUILD_DIR)/rv32i_reference_rv32i.elf
+RV32I_ASM_OBJECT := $(RV32I_BUILD_DIR)/rv32i_solver_rv32i.o
+RV32I_ASM_ELF := $(RV32I_BUILD_DIR)/rv32i_solver_rv32i.elf
 RIPES ?= ./Ripes-v2.2.6-106-g5b8a616-linux-x86_64.AppImage
 RIPES_RUN ?= APPIMAGE_EXTRACT_AND_RUN=1 $(RIPES)
 RIPES_TIMEOUT ?= 120000
@@ -50,11 +53,18 @@ VECTORS := tests/solutions.txt
 INVALID_STATES := 1234567111111 123456711111111 02345671111111 82345671111111 \
 	12345671111110 12345671111114 1234567111111a 11345671111111 12345671111112
 
-.PHONY: all check check-ida check-h3 check-static check-rv32i-c \
+.PHONY: all rv32i rv32i-led check check-ida check-h3 check-static check-rv32i-c \
 	check-rv32i-asm check-rv32i-led check-rv32i-binaries measure-rv32i \
 	prove clean indent
 
 all: solver mini
+
+rv32i: $(RV32I_ASM)
+
+rv32i-led: $(RV32I_ASM_LED)
+
+$(RV32I_BUILD_DIR):
+	mkdir -p $@
 
 solver: solver.c
 	$(CC) $(CFLAGS) $< -o $@
@@ -86,38 +96,41 @@ $(RV32I_TABLES): $(TABLE_GENERATOR)
 	mv $@.tmp $@
 
 $(RV32I_ASM): $(RV32I_ASM_CORE) $(RV32I_ASM_MAIN) \
-		$(RV32I_TABLES) Makefile
+		$(RV32I_TABLES) Makefile | $(RV32I_BUILD_DIR)
 	cat $(RV32I_TABLES) $(RV32I_ASM_MAIN) $(RV32I_ASM_CORE) >$@.tmp
 	mv $@.tmp $@
 
 $(RV32I_ASM_TEST): $(RV32I_ASM_CORE) $(RV32I_ASM_TEST_HARNESS) \
-		$(RV32I_TABLES) Makefile
+		$(RV32I_TABLES) Makefile | $(RV32I_BUILD_DIR)
 	cat $(RV32I_TABLES) $(RV32I_ASM_TEST_HARNESS) \
 		$(RV32I_ASM_CORE) >$@.tmp
 	mv $@.tmp $@
 
 $(RV32I_ASM_LED): $(RV32I_ASM_CORE) $(RV32I_ASM_LED_MAIN) \
-		$(RV32I_LED_RENDERER) $(RV32I_TABLES) Makefile
+		$(RV32I_LED_RENDERER) $(RV32I_TABLES) Makefile | $(RV32I_BUILD_DIR)
 	cat $(RV32I_TABLES) $(RV32I_ASM_LED_MAIN) $(RV32I_ASM_CORE) \
 		$(RV32I_LED_RENDERER) >$@.tmp
 	mv $@.tmp $@
 
 $(RV32I_LED_TEST): $(RV32I_ASM_CORE) $(RV32I_LED_TEST_HARNESS) \
-		$(RV32I_LED_RENDERER) $(RV32I_TABLES) Makefile
+		$(RV32I_LED_RENDERER) $(RV32I_TABLES) Makefile | $(RV32I_BUILD_DIR)
 	cat $(RV32I_TABLES) $(RV32I_LED_TEST_HARNESS) $(RV32I_ASM_CORE) \
 		$(RV32I_LED_RENDERER) >$@.tmp
 	mv $@.tmp $@
 
 $(RV32I_LED_SMOKE): $(RV32I_ASM_CORE) $(RV32I_ASM_LED_MAIN) \
-		$(RV32I_LED_RENDERER) $(RV32I_LED_MMIO_STUB) $(RV32I_TABLES) Makefile
+		$(RV32I_LED_RENDERER) $(RV32I_LED_MMIO_STUB) $(RV32I_TABLES) Makefile \
+		| $(RV32I_BUILD_DIR)
 	cat $(RV32I_LED_MMIO_STUB) $(RV32I_TABLES) $(RV32I_ASM_LED_MAIN) \
 		$(RV32I_ASM_CORE) $(RV32I_LED_RENDERER) >$@.tmp
 	mv $@.tmp $@
 
-$(RV32I_REFERENCE_OBJECT): rv32i_reference.c static_tables.h
+$(RV32I_REFERENCE_OBJECT): rv32i_reference.c static_tables.h \
+		| $(RV32I_BUILD_DIR)
 	$(RISCV_CC) $(RV32I_GCC_FLAGS) -DRV32I_TARGET -c $< -o $@
 
-$(RV32I_REFERENCE_START_OBJECT): rv32i_reference_start.s
+$(RV32I_REFERENCE_START_OBJECT): $(RV32I_SOURCE_DIR)/rv32i_reference_start.s \
+		| $(RV32I_BUILD_DIR)
 	$(RISCV_CC) $(RV32I_ARCH_FLAGS) -c $< -o $@
 
 $(RV32I_REFERENCE_ELF): $(RV32I_REFERENCE_START_OBJECT) \
@@ -341,10 +354,5 @@ endif
 clean:
 	$(RM) solver mini my_solver $(TABLE_GENERATOR) $(RV32I_REFERENCE) \
 		$(RV32I_TARGET_REFERENCE) $(RV32I_TARGET_TESTS) \
-		$(RV32I_ASM) $(RV32I_ASM_TEST) $(RV32I_ASM_LED) \
-		$(RV32I_LED_TEST) $(RV32I_LED_SMOKE) static_tables.h.tmp \
-		$(RV32I_REFERENCE_OBJECT) $(RV32I_REFERENCE_START_OBJECT) \
-		$(RV32I_REFERENCE_ELF) $(RV32I_ASM_OBJECT) $(RV32I_ASM_ELF) \
-		$(RV32I_TABLES).tmp $(RV32I_ASM).tmp $(RV32I_ASM_TEST).tmp \
-		$(RV32I_ASM_LED).tmp $(RV32I_LED_TEST).tmp \
-		$(RV32I_LED_SMOKE).tmp
+		static_tables.h.tmp $(RV32I_TABLES).tmp
+	$(RM) -r $(RV32I_BUILD_DIR)

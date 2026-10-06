@@ -888,9 +888,9 @@ The maintained assembly is split by responsibility:
 
 | Source | Responsibility |
 |---|---|
-| `rv32i_solver_core.s` | Parser/ranker, iterative IDA*, move application, solution replay, and fixed search storage |
-| `rv32i_solver_main.s` | Production input, `main`, result length in `x30`, and pass flag in `x31` |
-| `tests/rv32i_solver_tests.s` | Three valid cases, nine invalid cases, expected ranks and lengths, and the regression-test `main` |
+| `asm/rv32i_solver_core.s` | Parser/ranker, iterative IDA*, move application, solution replay, and fixed search storage |
+| `asm/rv32i_solver_main.s` | Production input, `main`, result length in `x30`, and pass flag in `x31` |
+| `asm/tests/rv32i_solver_tests.s` | Three valid cases, nine invalid cases, expected ranks and lengths, and the regression-test `main` |
 
 The core deliberately contains neither an entry point nor the generated
 tables, so none of these maintained files is a complete stand-alone Ripes
@@ -898,11 +898,13 @@ program.  Ripes consumes one assembly source in CLI mode, so the Makefile
 constructs the two complete inputs as follows:
 
 ```text
-static_tables_rv32i.inc + rv32i_solver_main.s + rv32i_solver_core.s
-    -> rv32i_solver.s
+asm/static_tables_rv32i.inc + asm/rv32i_solver_main.s
+    + asm/rv32i_solver_core.s
+    -> build/rv32i/rv32i_solver.s
 
-static_tables_rv32i.inc + tests/rv32i_solver_tests.s + rv32i_solver_core.s
-    -> rv32i_solver_tests.s
+asm/static_tables_rv32i.inc + asm/tests/rv32i_solver_tests.s
+    + asm/rv32i_solver_core.s
+    -> build/rv32i/rv32i_solver_tests.s
 ```
 
 This keeps the 40,383 table bytes reproducible without copying them into the
@@ -968,14 +970,15 @@ the target's actual returned path rather than a pre-recorded solution.
 The complete sources for manual use in Ripes are generated with:
 
 ```bash
-make rv32i_solver.s rv32i_solver_tests.s
+make rv32i
+make check-rv32i-asm
 ```
 
-`rv32i_solver.s` runs the production input; `rv32i_solver_tests.s` runs the
-complete internal regression.  The latter can also be executed automatically
-on both processor models with `make check-rv32i-asm`.  At this stage the
-observable outputs are registers and performance counters: no LED-matrix MMIO
-has been added yet.
+`build/rv32i/rv32i_solver.s` runs the production input;
+`build/rv32i/rv32i_solver_tests.s` runs the complete internal regression.
+The latter is generated and executed automatically on both processor models
+by `make check-rv32i-asm`.  At this stage the observable outputs are registers
+and performance counters: no LED-matrix MMIO has been added yet.
 
 The default production input is the distance-11 vector.  Its `RV32_ISS`
 result was:
@@ -1002,7 +1005,7 @@ cases.
 The comparison uses complete freestanding programs rather than isolated
 functions.  Because `-nostdlib` removes the operating-system and C-runtime
 startup code, the compiled C program cannot safely start at `main` by itself.
-`rv32i_reference_start.s` supplies the missing minimum: `_start` initializes a
+`asm/rv32i_reference_start.s` supplies the missing minimum: `_start` initializes a
 512-byte stack, calls the C `main`, converts return value zero into the same
 `x31 = 1` pass flag, and terminates through the Ripes environment call.  It is
 only a startup wrapper for the GCC baseline; the handwritten solver does not
@@ -1011,12 +1014,12 @@ use it or a runtime stack.
 Compilation and linking produce these two comparable executables:
 
 ```text
-rv32i_reference.c -> rv32i_reference_rv32i.o
-rv32i_reference_start.s -> rv32i_reference_start.o
-    -> rv32i_reference_rv32i.elf
+rv32i_reference.c -> build/rv32i/rv32i_reference_rv32i.o
+asm/rv32i_reference_start.s -> build/rv32i/rv32i_reference_start.o
+    -> build/rv32i/rv32i_reference_rv32i.elf
 
-rv32i_solver.s -> rv32i_solver_rv32i.o
-    -> rv32i_solver_rv32i.elf
+build/rv32i/rv32i_solver.s -> build/rv32i/rv32i_solver_rv32i.o
+    -> build/rv32i/rv32i_solver_rv32i.elf
 ```
 
 An `.o` file is relocatable machine code whose addresses and external symbols
@@ -1079,8 +1082,8 @@ AppImage.
 
 ### 5. LED Matrix Visualization
 
-The GUI build adds `rv32i_led_renderer.s` and uses
-`rv32i_solver_led_main.s` as its entry harness.  The solver, tables, parser,
+The GUI build adds `asm/rv32i_led_renderer.s` and uses
+`asm/rv32i_solver_led_main.s` as its entry harness.  The solver, tables, parser,
 IDA*, solution buffer, and replay check are unchanged.  Only after replay has
 proved the returned path does the GUI harness pass that same solution to the
 renderer.  The display is therefore driven by the solver's actual output, not
@@ -1114,8 +1117,8 @@ switch at build time instead of leaving a runtime branch:
 
 | Generated source | Contents | Purpose |
 |---|---|---|
-| `rv32i_solver.s` | Tables, normal main, solver core | Renderer-free CLI measurement |
-| `rv32i_solver_led.s` | Tables, LED main, solver core, renderer | Ripes GUI animation |
+| `build/rv32i/rv32i_solver.s` | Tables, normal main, solver core | Renderer-free CLI measurement |
+| `build/rv32i/rv32i_solver_led.s` | Tables, LED main, solver core, renderer | Ripes GUI animation |
 
 The CLI executable contains no renderer code, data, call, or LED symbols, so
 the code-size and `--iret` measurements in the previous section remain
@@ -1135,12 +1138,12 @@ from the search-performance comparison.
 
 To run the visualization:
 
-1. Run `make rv32i_solver_led.s`.
+1. Run `make rv32i-led`.
 2. Start Ripes and instantiate an LED Matrix in the I/O tab.
 3. Set Width to 35 and Height to 25.  Ripes displays Height above Width in the
    peripheral settings.
-4. Load the generated `rv32i_solver_led.s`, assemble it after the peripheral
-   exists, and run to the final `ecall`.
+4. Load the generated `build/rv32i/rv32i_solver_led.s`, assemble it after the
+   peripheral exists, and run to the final `ecall`.
 5. Confirm that `x30` is the solution length and `x31` is one.
 
 The generated GUI source is ignored by Git; the maintained renderer and LED
