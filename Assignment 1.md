@@ -1122,7 +1122,9 @@ the code-size and `--iret` measurements in the previous section remain
 comparable.  The GUI build obtains its address and dimensions through
 `LED_MATRIX_0_BASE`, `LED_MATRIX_0_WIDTH`, and `LED_MATRIX_0_HEIGHT`; it does
 not embed the peripheral's address.  `render_delay_count` controls the pause
-between frames and can be adjusted without changing the solver.
+between frames and can be adjusted without changing the solver.  Its default
+is 2,000,000 loop iterations so that GUI refreshes can expose the individual
+solution frames; this delay is absent from the renderer-free measured build.
 
 With the test-only RAM framebuffer excluded, the linked GUI build has 2,156
 bytes of `.text` and 40,764 bytes of static data.  The renderer therefore adds

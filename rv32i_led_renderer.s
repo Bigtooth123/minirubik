@@ -85,7 +85,7 @@ render_led_width:
 render_led_height:
     .word 0
 render_delay_count:
-    .word 200000
+    .word 2000000
 
 .text
 # Copy the parsed input into the independent visualization state.
