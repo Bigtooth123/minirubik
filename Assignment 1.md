@@ -1076,3 +1076,85 @@ make measure-rv32i
 tools are not installed on `PATH`.  `measure-rv32i` builds both ELFs, checks
 their pass flags, and runs both `RV32_ISS` and `RV32_5S` with the pinned Ripes
 AppImage.
+
+### 5. LED Matrix Visualization
+
+The GUI build adds `rv32i_led_renderer.s` and uses
+`rv32i_solver_led_main.s` as its entry harness.  The solver, tables, parser,
+IDA*, solution buffer, and replay check are unchanged.  Only after replay has
+proved the returned path does the GUI harness pass that same solution to the
+renderer.  The display is therefore driven by the solver's actual output, not
+by a recorded move sequence.
+
+The renderer keeps an independent seven-corner permutation and orientation
+state initialized from `parsed_permutation` and `parsed_orientation`.  It
+draws the initial state, applies each encoded move with the same source and
+twist rules as the solver, and redraws after every move.  A corner's
+orientation rotates its three sticker colors; the fixed corner is supplied
+implicitly with solved orientation.  Six `0xRRGGBB` colors represent the U,
+L, F, R, B, and D faces.
+
+The unfolded net uses four face slots across and three down:
+
+```text
+         U
+      L  F  R  B
+         D
+```
+
+Each facelet occupies 4 by 3 LEDs.  A face is therefore 8 by 6 LEDs, with one
+separator column or row between adjacent face slots.  This uses 35 columns by
+20 rows; the final five rows of the required 35 by 25 matrix remain black.
+Framebuffer addresses use the actual row-major formula
+`(y * width + x) * 4`, with one 24-bit RGB value in each 32-bit word.
+
+Ripes CLI creates no I/O peripherals, and the pinned assembler does not
+support a `.if` directive.  The Makefile therefore performs the renderer
+switch at build time instead of leaving a runtime branch:
+
+| Generated source | Contents | Purpose |
+|---|---|---|
+| `rv32i_solver.s` | Tables, normal main, solver core | Renderer-free CLI measurement |
+| `rv32i_solver_led.s` | Tables, LED main, solver core, renderer | Ripes GUI animation |
+
+The CLI executable contains no renderer code, data, call, or LED symbols, so
+the code-size and `--iret` measurements in the previous section remain
+comparable.  The GUI build obtains its address and dimensions through
+`LED_MATRIX_0_BASE`, `LED_MATRIX_0_WIDTH`, and `LED_MATRIX_0_HEIGHT`; it does
+not embed the peripheral's address.  `render_delay_count` controls the pause
+between frames and can be adjusted without changing the solver.
+
+With the test-only RAM framebuffer excluded, the linked GUI build has 2,156
+bytes of `.text` and 40,764 bytes of static data.  The renderer therefore adds
+984 code bytes and 244 data bytes to the measured solver, while the complete
+GUI program remains well below the 128 KiB static-data limit.  These sizes are
+reported separately because renderer instructions are intentionally excluded
+from the search-performance comparison.
+
+To run the visualization:
+
+1. Run `make rv32i_solver_led.s`.
+2. Start Ripes and instantiate an LED Matrix in the I/O tab.
+3. Set Width to 35 and Height to 25.  Ripes displays Height above Width in the
+   peripheral settings.
+4. Load the generated `rv32i_solver_led.s`, assemble it after the peripheral
+   exists, and run to the final `ecall`.
+5. Confirm that `x30` is the solution length and `x31` is one.
+
+The generated GUI source is ignored by Git; the maintained renderer and LED
+main are committed instead.  Automated verification is available through:
+
+```bash
+make check-rv32i-led
+```
+
+Because the CLI cannot instantiate the real peripheral, this test uses a
+35-by-25 RAM framebuffer with the same addressing.  On both `RV32_ISS` and
+`RV32_5S` it solves the distance-11 input, replays the actual returned path in
+the visualization state, verifies that all seven moving corners finish solved,
+and checks the 24 solved facelet colors and black separator pixels.  It then
+applies an `R` turn and checks all 24 colors again, which also tests sticker
+orientation.  A separate smoke test runs the complete GUI harness with RAM
+standing in for MMIO, including the initial frame, every solution frame, and
+the final pass flag.  Visual confirmation on the actual Ripes LED peripheral
+is the remaining manual GUI check.

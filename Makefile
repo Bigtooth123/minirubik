@@ -25,8 +25,15 @@ RV32I_TARGET_TESTS := rv32i_reference_tests
 RV32I_ASM_CORE := rv32i_solver_core.s
 RV32I_ASM_MAIN := rv32i_solver_main.s
 RV32I_ASM_TEST_HARNESS := tests/rv32i_solver_tests.s
+RV32I_ASM_LED_MAIN := rv32i_solver_led_main.s
+RV32I_LED_RENDERER := rv32i_led_renderer.s
+RV32I_LED_TEST_HARNESS := tests/rv32i_led_tests.s
+RV32I_LED_MMIO_STUB := tests/rv32i_led_mmio_stub.s
 RV32I_ASM := rv32i_solver.s
 RV32I_ASM_TEST := rv32i_solver_tests.s
+RV32I_ASM_LED := rv32i_solver_led.s
+RV32I_LED_TEST := rv32i_led_tests.s
+RV32I_LED_SMOKE := rv32i_led_smoke.s
 RV32I_REFERENCE_OBJECT := rv32i_reference_rv32i.o
 RV32I_REFERENCE_START_OBJECT := rv32i_reference_start.o
 RV32I_REFERENCE_ELF := rv32i_reference_rv32i.elf
@@ -44,7 +51,8 @@ INVALID_STATES := 1234567111111 123456711111111 02345671111111 82345671111111 \
 	12345671111110 12345671111114 1234567111111a 11345671111111 12345671111112
 
 .PHONY: all check check-ida check-h3 check-static check-rv32i-c \
-	check-rv32i-asm check-rv32i-binaries measure-rv32i prove clean indent
+	check-rv32i-asm check-rv32i-led check-rv32i-binaries measure-rv32i \
+	prove clean indent
 
 all: solver mini
 
@@ -86,6 +94,24 @@ $(RV32I_ASM_TEST): $(RV32I_ASM_CORE) $(RV32I_ASM_TEST_HARNESS) \
 		$(RV32I_TABLES) Makefile
 	cat $(RV32I_TABLES) $(RV32I_ASM_TEST_HARNESS) \
 		$(RV32I_ASM_CORE) >$@.tmp
+	mv $@.tmp $@
+
+$(RV32I_ASM_LED): $(RV32I_ASM_CORE) $(RV32I_ASM_LED_MAIN) \
+		$(RV32I_LED_RENDERER) $(RV32I_TABLES) Makefile
+	cat $(RV32I_TABLES) $(RV32I_ASM_LED_MAIN) $(RV32I_ASM_CORE) \
+		$(RV32I_LED_RENDERER) >$@.tmp
+	mv $@.tmp $@
+
+$(RV32I_LED_TEST): $(RV32I_ASM_CORE) $(RV32I_LED_TEST_HARNESS) \
+		$(RV32I_LED_RENDERER) $(RV32I_TABLES) Makefile
+	cat $(RV32I_TABLES) $(RV32I_LED_TEST_HARNESS) $(RV32I_ASM_CORE) \
+		$(RV32I_LED_RENDERER) >$@.tmp
+	mv $@.tmp $@
+
+$(RV32I_LED_SMOKE): $(RV32I_ASM_CORE) $(RV32I_ASM_LED_MAIN) \
+		$(RV32I_LED_RENDERER) $(RV32I_LED_MMIO_STUB) $(RV32I_TABLES) Makefile
+	cat $(RV32I_LED_MMIO_STUB) $(RV32I_TABLES) $(RV32I_ASM_LED_MAIN) \
+		$(RV32I_ASM_CORE) $(RV32I_LED_RENDERER) >$@.tmp
 	mv $@.tmp $@
 
 $(RV32I_REFERENCE_OBJECT): rv32i_reference.c static_tables.h
@@ -164,6 +190,44 @@ check-rv32i-asm: $(RV32I_ASM_TEST)
 		rm -f "$$output"; \
 		trap - 0 1 2 15; \
 	done
+
+check-rv32i-led: $(RV32I_LED_TEST) $(RV32I_LED_SMOKE)
+	@set -e; \
+	for processor in RV32_ISS RV32_5S; do \
+		output=$$(mktemp); \
+		trap 'rm -f "$$output"' 0 1 2 15; \
+		if ! $(RIPES_RUN) --mode cli --src $(RV32I_LED_TEST) -t asm \
+			--proc $$processor --timeout $(RIPES_TIMEOUT) --iret --cycles \
+			--regs --json >"$$output" 2>&1; then \
+			cat "$$output"; \
+			echo "$$processor: LED renderer test failed to execute"; \
+			exit 1; \
+		fi; \
+		grep -q '"x31": 1' "$$output" || { \
+			cat "$$output"; \
+			echo "$$processor: LED renderer validation failed"; \
+			exit 1; \
+		}; \
+		echo "$$processor: LED renderer test passed"; \
+		grep -E 'instructions retired|"cycles"' "$$output"; \
+		rm -f "$$output"; \
+		trap - 0 1 2 15; \
+	done
+	@output=$$(mktemp); \
+	trap 'rm -f "$$output"' 0 1 2 15; \
+	if ! $(RIPES_RUN) --mode cli --src $(RV32I_LED_SMOKE) -t asm \
+		--proc RV32_ISS --timeout $(RIPES_TIMEOUT) --regs --json \
+		>"$$output" 2>&1; then \
+		cat "$$output"; \
+		echo "LED GUI build smoke test failed to execute"; \
+		exit 1; \
+	fi; \
+	grep -q '"x31": 1' "$$output" || { \
+		cat "$$output"; \
+		echo "LED GUI build smoke test failed"; \
+		exit 1; \
+	}; \
+	echo "LED GUI build smoke test passed"
 
 check-rv32i-binaries: $(RV32I_REFERENCE_ELF) $(RV32I_ASM_ELF)
 	@test -z "$$($(RISCV_NM) -u $(RV32I_REFERENCE_ELF))"
@@ -277,7 +341,10 @@ endif
 clean:
 	$(RM) solver mini my_solver $(TABLE_GENERATOR) $(RV32I_REFERENCE) \
 		$(RV32I_TARGET_REFERENCE) $(RV32I_TARGET_TESTS) \
-		$(RV32I_ASM) $(RV32I_ASM_TEST) static_tables.h.tmp \
+		$(RV32I_ASM) $(RV32I_ASM_TEST) $(RV32I_ASM_LED) \
+		$(RV32I_LED_TEST) $(RV32I_LED_SMOKE) static_tables.h.tmp \
 		$(RV32I_REFERENCE_OBJECT) $(RV32I_REFERENCE_START_OBJECT) \
 		$(RV32I_REFERENCE_ELF) $(RV32I_ASM_OBJECT) $(RV32I_ASM_ELF) \
-		$(RV32I_TABLES).tmp $(RV32I_ASM).tmp $(RV32I_ASM_TEST).tmp
+		$(RV32I_TABLES).tmp $(RV32I_ASM).tmp $(RV32I_ASM_TEST).tmp \
+		$(RV32I_ASM_LED).tmp $(RV32I_LED_TEST).tmp \
+		$(RV32I_LED_SMOKE).tmp
