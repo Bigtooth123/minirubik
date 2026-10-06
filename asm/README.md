@@ -23,7 +23,7 @@ Assembly test harnesses are in `tests/`.
 make rv32i             # build/rv32i/rv32i_solver.s
 make rv32i-led         # build/rv32i/rv32i_solver_led.s
 make check-rv32i-asm   # solver tests on RV32_ISS and RV32_5S
-make check-rv32i-led   # renderer tests and GUI-build smoke test
+make check-rv32i-led   # renderer tests on RV32_ISS and RV32_5S
 ```
 
 For the GUI visualization, create a 35-by-25 LED Matrix in Ripes before

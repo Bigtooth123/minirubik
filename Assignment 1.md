@@ -1159,7 +1159,5 @@ Because the CLI cannot instantiate the real peripheral, this test uses a
 the visualization state, verifies that all seven moving corners finish solved,
 and checks the 24 solved facelet colors and black separator pixels.  It then
 applies an `R` turn and checks all 24 colors again, which also tests sticker
-orientation.  A separate smoke test runs the complete GUI harness with RAM
-standing in for MMIO, including the initial frame, every solution frame, and
-the final pass flag.  Visual confirmation on the actual Ripes LED peripheral
-is the remaining manual GUI check.
+orientation.  Visual confirmation of the production GUI harness on the actual
+Ripes LED peripheral is the remaining manual check.

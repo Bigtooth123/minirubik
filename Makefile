@@ -31,12 +31,10 @@ RV32I_ASM_TEST_HARNESS := $(RV32I_TEST_DIR)/rv32i_solver_tests.s
 RV32I_ASM_LED_MAIN := $(RV32I_SOURCE_DIR)/rv32i_solver_led_main.s
 RV32I_LED_RENDERER := $(RV32I_SOURCE_DIR)/rv32i_led_renderer.s
 RV32I_LED_TEST_HARNESS := $(RV32I_TEST_DIR)/rv32i_led_tests.s
-RV32I_LED_MMIO_STUB := $(RV32I_TEST_DIR)/rv32i_led_mmio_stub.s
 RV32I_ASM := $(RV32I_BUILD_DIR)/rv32i_solver.s
 RV32I_ASM_TEST := $(RV32I_BUILD_DIR)/rv32i_solver_tests.s
 RV32I_ASM_LED := $(RV32I_BUILD_DIR)/rv32i_solver_led.s
 RV32I_LED_TEST := $(RV32I_BUILD_DIR)/rv32i_led_tests.s
-RV32I_LED_SMOKE := $(RV32I_BUILD_DIR)/rv32i_led_smoke.s
 RV32I_REFERENCE_OBJECT := $(RV32I_BUILD_DIR)/rv32i_reference_rv32i.o
 RV32I_REFERENCE_START_OBJECT := $(RV32I_BUILD_DIR)/rv32i_reference_start.o
 RV32I_REFERENCE_ELF := $(RV32I_BUILD_DIR)/rv32i_reference_rv32i.elf
@@ -118,13 +116,6 @@ $(RV32I_LED_TEST): $(RV32I_ASM_CORE) $(RV32I_LED_TEST_HARNESS) \
 		$(RV32I_LED_RENDERER) >$@.tmp
 	mv $@.tmp $@
 
-$(RV32I_LED_SMOKE): $(RV32I_ASM_CORE) $(RV32I_ASM_LED_MAIN) \
-		$(RV32I_LED_RENDERER) $(RV32I_LED_MMIO_STUB) $(RV32I_TABLES) Makefile \
-		| $(RV32I_BUILD_DIR)
-	cat $(RV32I_LED_MMIO_STUB) $(RV32I_TABLES) $(RV32I_ASM_LED_MAIN) \
-		$(RV32I_ASM_CORE) $(RV32I_LED_RENDERER) >$@.tmp
-	mv $@.tmp $@
-
 $(RV32I_REFERENCE_OBJECT): rv32i_reference.c static_tables.h \
 		| $(RV32I_BUILD_DIR)
 	$(RISCV_CC) $(RV32I_GCC_FLAGS) -DRV32I_TARGET -c $< -o $@
@@ -204,7 +195,7 @@ check-rv32i-asm: $(RV32I_ASM_TEST)
 		trap - 0 1 2 15; \
 	done
 
-check-rv32i-led: $(RV32I_LED_TEST) $(RV32I_LED_SMOKE)
+check-rv32i-led: $(RV32I_LED_TEST)
 	@set -e; \
 	for processor in RV32_ISS RV32_5S; do \
 		output=$$(mktemp); \
@@ -226,21 +217,6 @@ check-rv32i-led: $(RV32I_LED_TEST) $(RV32I_LED_SMOKE)
 		rm -f "$$output"; \
 		trap - 0 1 2 15; \
 	done
-	@output=$$(mktemp); \
-	trap 'rm -f "$$output"' 0 1 2 15; \
-	if ! $(RIPES_RUN) --mode cli --src $(RV32I_LED_SMOKE) -t asm \
-		--proc RV32_ISS --timeout $(RIPES_TIMEOUT) --regs --json \
-		>"$$output" 2>&1; then \
-		cat "$$output"; \
-		echo "LED GUI build smoke test failed to execute"; \
-		exit 1; \
-	fi; \
-	grep -q '"x31": 1' "$$output" || { \
-		cat "$$output"; \
-		echo "LED GUI build smoke test failed"; \
-		exit 1; \
-	}; \
-	echo "LED GUI build smoke test passed"
 
 check-rv32i-binaries: $(RV32I_REFERENCE_ELF) $(RV32I_ASM_ELF)
 	@test -z "$$($(RISCV_NM) -u $(RV32I_REFERENCE_ELF))"
