@@ -1161,3 +1161,33 @@ and checks the 24 solved facelet colors and black separator pixels.  It then
 applies an `R` turn and checks all 24 colors again, which also tests sticker
 orientation.  Visual confirmation of the production GUI harness on the actual
 Ripes LED peripheral is the remaining manual check.
+
+### 6. Verification Workflow
+
+The following sequence separates host correctness, Ripes assembly tests, and
+the final binary comparison:
+
+```bash
+make check                 # baseline and compact host solvers
+make check-static          # generated tables, transitions, H1, and H2
+make check-h3              # all 3,674,160 states against exact BFS distances
+make check-rv32i-c         # target-oriented C and solution-vector comparison
+make check-rv32i-asm       # assembly solver on RV32_ISS and RV32_5S
+make check-rv32i-led       # renderer and visual-state checks on both models
+```
+
+The first four targets use the host compiler.  The two assembly targets use the
+pinned Ripes AppImage; it must be executable.  `check-h3` is the slow test and
+takes about four minutes on this installation.
+
+With `riscv64-unknown-elf-gcc` and its binutils installed, run:
+
+```bash
+make check-rv32i-binaries  # link, inspect symbols, and reject RV32M arithmetic
+make measure-rv32i         # compare both ELFs with Ripes --iret and --cycles
+```
+
+An optional `make clean` before this sequence verifies that all generated
+sources and binaries can be rebuilt.  LED MMIO behavior still requires the
+manual GUI procedure above; the automated LED test validates the same renderer
+against a RAM framebuffer.
