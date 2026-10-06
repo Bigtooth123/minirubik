@@ -871,18 +871,11 @@ fresh IDA* search for every state.
 
 ## Stage 4
 
-### 1. Assembly Source and Test Boundary
+### 1. Assembly Architecture and Generated Programs
 
-`rv32i_reference.c` is the target-facing C specification.  It contains only
-input validation, component ranking, static-table IDA*, and solution replay;
-the host BFS and table builders remain in `my_solver.c`.  The reference has a
-host command-line build, a freestanding single-input build, and a freestanding
-three-case test build.
-
-The pinned Ripes AppImage reports `No C compiler set` for `-t c`, so the C
-reference is compiled separately with `riscv64-unknown-elf-gcc` 13.2.0 and GNU
-ld 2.42.  Ripes then runs the linked ELF, making its instruction and cycle
-counts directly comparable with the hand-written assembly ELF.
+`rv32i_reference.c` is the target-facing C specification for validation,
+ranking, static-table IDA*, and replay.  Host-only BFS and table generation
+remain in `my_solver.c`.
 
 The maintained assembly is split by responsibility:
 
@@ -891,81 +884,50 @@ The maintained assembly is split by responsibility:
 | `asm/rv32i_solver_core.s` | Parser/ranker, iterative IDA*, move application, solution replay, and fixed search storage |
 | `asm/rv32i_solver_main.s` | Production input, `main`, result length in `x30`, and pass flag in `x31` |
 | `asm/tests/rv32i_solver_tests.s` | Three valid cases, nine invalid cases, expected ranks and lengths, and the regression-test `main` |
+| `asm/rv32i_solver_led_main.s` | Production solver entry point with LED visualization |
+| `asm/rv32i_led_renderer.s` | Visual cube state, LED matrix drawing, and animation delay |
+| `asm/tests/rv32i_led_tests.s` | Renderer and visual-state regression harness |
 
 The core deliberately contains neither an entry point nor the generated
 tables, so none of these maintained files is a complete stand-alone Ripes
-program.  Ripes consumes one assembly source in CLI mode, so the Makefile
-constructs the two complete inputs as follows:
+program.  The Makefile combines the core and generated tables with one entry
+harness; LED builds additionally include the renderer:
 
-```text
-asm/static_tables_rv32i.inc + asm/rv32i_solver_main.s
-    + asm/rv32i_solver_core.s
-    -> build/rv32i/rv32i_solver.s
-
-asm/static_tables_rv32i.inc + asm/tests/rv32i_solver_tests.s
-    + asm/rv32i_solver_core.s
-    -> build/rv32i/rv32i_solver_tests.s
-```
+| Generated source | Entry harness | Purpose |
+|---|---|---|
+| `build/rv32i/rv32i_solver.s` | `rv32i_solver_main.s` | Solver and measurement |
+| `build/rv32i/rv32i_solver_tests.s` | `tests/rv32i_solver_tests.s` | Solver regression |
+| `build/rv32i/rv32i_solver_led.s` | `rv32i_solver_led_main.s` | Ripes GUI animation |
+| `build/rv32i/rv32i_led_tests.s` | `tests/rv32i_led_tests.s` | Renderer regression |
 
 This keeps the 40,383 table bytes reproducible without copying them into the
-handwritten source, and excludes test code and strings from the production
-build.  The two combined `.s` files are generated artifacts and are not
+handwritten source, while keeping tests and LED code out of the measured
+solver.  These combined `.s` files are generated artifacts and are not
 committed.
 
-### 2. Parser and Component-Rank Checkpoint
+### 2. RV32I Solver and Correctness
 
-The first assembly checkpoint implements the complete 14-character parser and
-the two input ranks.  It rejects out-of-range digits, duplicate cubies, an
-invalid orientation sum, and a trailing fifteenth character.  Lehmer radices
-6, 5, 4, 3, and 2 are formed only with shifts and adds.  The orientation rank
-uses the same base-three shift/add recurrence as the C reference.  The source
-contains no multiply, divide, or remainder instruction.
-
-The program validates three legal states internally:
-
-| Case | Permutation rank | Orientation rank |
-|---|---:|---:|
-| Solved | 0 | 0 |
-| One `R` turn | 1,104 | 426 |
-| Distance-11 vector | 720 | 0 |
-
-It also exercises all nine invalid-input categories used by the host tests.
-Register `x31` is set to one only after every check passes, allowing the
-Makefile to reject a failure from the Ripes JSON register report.
-
-The initial measurements are:
-
-| Ripes model | Retired instructions | Cycles |
-|---|---:|---:|
-| `RV32_ISS` | 2,628 | 2,628 |
-| `RV32_5S` | 2,627 | 3,427 |
-
-These counts cover three valid parses/ranks, nine rejected inputs, and program
-termination.  They are a correctness checkpoint, not a measurement of the
-IDA* solver.  Solver measurements begin after the assembly search and replay
-paths are connected.
-
-### 3. Functional Assembly IDA* Solver
-
-The next refinement connects the parser to the static transition and
-heuristic tables, the iterative IDA* search, and an independent replay of the
-returned path.  The search uses twelve six-byte frames and an eleven-byte
-solution buffer.  It has no recursion, dynamic allocation, or dependency on a
-runtime stack pointer.
-
-Each move selects one of the three permutation and orientation rows, follows
-the row one to three times, and loads the next component ranks with `lhu`.
-The row byte offsets 10,080, 20,160, 1,458, and 2,916 are constructed with
-`lui`, `addi`, and `add`; no multiply is hidden in address calculation.  The
-same-face pruning and smallest-rejected-bound update are the same operations
-verified by H3 in the C implementation.
+The core parses the 14-character state, rejects malformed or impossible
+inputs, computes both component ranks, runs static-table IDA*, and independently
+replays the result.  Ranking and fixed table offsets use shifts and adds; the
+source contains no multiply, divide, or remainder instruction.  The iterative
+search uses twelve six-byte frames and an eleven-byte solution buffer, with no
+recursion, dynamic allocation, or runtime stack dependency.  Its pruning and
+bound update match the C algorithm verified by H3.
 
 The production source embeds one arbitrary state at `input_state`.  It parses,
 solves, and replays that state, then leaves the solution length in `x30` and a
-pass flag in `x31`.  The generated test source instead solves the three fixed
-states, checks exact lengths 0, 1, and 11, replays every path, and rejects all
-nine invalid inputs.  Thus the distance-11 case checks both optimal length and
-the target's actual returned path rather than a pre-recorded solution.
+pass flag in `x31`.  The regression build rejects nine invalid inputs and
+checks these three cases, including replay of the returned path:
+
+| Case | Exact length | Permutation rank | Orientation rank |
+|---|---:|---:|---:|
+| Solved | 0 | 0 | 0 |
+| One `R` turn | 1 | 1,104 | 426 |
+| Distance-11 vector | 11 | 720 | 0 |
+
+Register `x31` is set to one only after every check passes, allowing the
+Makefile to detect a failure from the Ripes JSON register report.
 
 The complete sources for manual use in Ripes are generated with:
 
@@ -974,33 +936,16 @@ make rv32i
 make check-rv32i-asm
 ```
 
-`build/rv32i/rv32i_solver.s` runs the production input;
-`build/rv32i/rv32i_solver_tests.s` runs the complete internal regression.
-The latter is generated and executed automatically on both processor models
-by `make check-rv32i-asm`.  At this stage the observable outputs are registers
-and performance counters: no LED-matrix MMIO has been added yet.
+`make check-rv32i-asm` generates the regression source and runs it on both
+`RV32_ISS` and `RV32_5S`; both set `x31` to one.  This establishes T5 for
+returned paths, T6 for the distance-11 vector, and cross-model agreement.
 
-The default production input is the distance-11 vector.  Its `RV32_ISS`
-result was:
+### 3. GCC Baseline and Measured Assembly Improvement
 
-| Retired instructions | Cycles | `x30` | `x31` |
-|---:|---:|---:|---:|
-| 18,816,526 | 18,816,526 | 11 | 1 |
-
-The complete internal regression produced:
-
-| Ripes model | Retired instructions | Cycles |
-|---|---:|---:|
-| `RV32_ISS` | 18,819,055 | 18,819,055 |
-| `RV32_5S` | 18,819,054 | 23,539,644 |
-
-Both models set `x31` to one.  The one-instruction difference is the models'
-handling of program termination; all solver and replay checks agree.  These
-results establish T5 for the embedded test paths, T6 for the known
-distance-11 vector, and cross-model agreement for the three required local
-cases.
-
-### 4. GCC Baseline and Measured Assembly Improvement
+The pinned Ripes AppImage reports `No C compiler set` for `-t c`, so the C
+reference is compiled separately with `riscv64-unknown-elf-gcc` 13.2.0 and GNU
+ld 2.42.  Ripes runs that linked ELF and the hand-written assembly ELF under
+the same processor models.
 
 The comparison uses complete freestanding programs rather than isolated
 functions.  Because `-nostdlib` removes the operating-system and C-runtime
@@ -1075,27 +1020,13 @@ make check-rv32i-binaries
 make measure-rv32i
 ```
 
-`RISCV_PREFIX=/path/to/riscv64-unknown-elf-` may be supplied when the cross
-tools are not installed on `PATH`.  `measure-rv32i` builds both ELFs, checks
-their pass flags, and runs both `RV32_ISS` and `RV32_5S` with the pinned Ripes
-AppImage.
+### 4. LED Matrix Visualization
 
-### 5. LED Matrix Visualization
-
-The GUI build adds `asm/rv32i_led_renderer.s` and uses
-`asm/rv32i_solver_led_main.s` as its entry harness.  The solver, tables, parser,
-IDA*, solution buffer, and replay check are unchanged.  Only after replay has
-proved the returned path does the GUI harness pass that same solution to the
-renderer.  The display is therefore driven by the solver's actual output, not
-by a recorded move sequence.
-
-The renderer keeps an independent seven-corner permutation and orientation
-state initialized from `parsed_permutation` and `parsed_orientation`.  It
-draws the initial state, applies each encoded move with the same source and
-twist rules as the solver, and redraws after every move.  A corner's
-orientation rotates its three sticker colors; the fixed corner is supplied
-implicitly with solved orientation.  Six `0xRRGGBB` colors represent the U,
-L, F, R, B, and D faces.
+The GUI build adds `asm/rv32i_led_renderer.s` without changing the solver.
+After replay verifies the returned path, the renderer initializes an
+independent seven-corner visual state, draws it, and applies and redraws every
+solution move.  Six `0xRRGGBB` colors represent the U, L, F, R, B, and D
+faces; corner orientation rotates the corresponding sticker colors.
 
 The unfolded net uses four face slots across and three down:
 
@@ -1111,18 +1042,9 @@ separator column or row between adjacent face slots.  This uses 35 columns by
 Framebuffer addresses use the actual row-major formula
 `(y * width + x) * 4`, with one 24-bit RGB value in each 32-bit word.
 
-Ripes CLI creates no I/O peripherals, and the pinned assembler does not
-support a `.if` directive.  The Makefile therefore performs the renderer
-switch at build time instead of leaving a runtime branch:
-
-| Generated source | Contents | Purpose |
-|---|---|---|
-| `build/rv32i/rv32i_solver.s` | Tables, normal main, solver core | Renderer-free CLI measurement |
-| `build/rv32i/rv32i_solver_led.s` | Tables, LED main, solver core, renderer | Ripes GUI animation |
-
-The CLI executable contains no renderer code, data, call, or LED symbols, so
-the code-size and `--iret` measurements in the previous section remain
-comparable.  The GUI build obtains its address and dimensions through
+Ripes CLI creates no I/O peripherals, so the renderer is included only in the
+GUI build.  The measured solver contains no LED code or data.  The GUI obtains
+its address and dimensions through
 `LED_MATRIX_0_BASE`, `LED_MATRIX_0_WIDTH`, and `LED_MATRIX_0_HEIGHT`; it does
 not embed the peripheral's address.  `render_delay_count` controls the pause
 between frames and can be adjusted without changing the solver.  Its default
@@ -1153,16 +1075,13 @@ main are committed instead.  Automated verification is available through:
 make check-rv32i-led
 ```
 
-Because the CLI cannot instantiate the real peripheral, this test uses a
-35-by-25 RAM framebuffer with the same addressing.  On both `RV32_ISS` and
-`RV32_5S` it solves the distance-11 input, replays the actual returned path in
-the visualization state, verifies that all seven moving corners finish solved,
-and checks the 24 solved facelet colors and black separator pixels.  It then
-applies an `R` turn and checks all 24 colors again, which also tests sticker
-orientation.  Visual confirmation of the production GUI harness on the actual
-Ripes LED peripheral is the remaining manual check.
+Because CLI mode has no peripheral, this test uses an equivalent 35-by-25 RAM
+framebuffer.  On both processor models it solves and visually replays the
+distance-11 case, checks the solved visual state and pixels, and checks an `R`
+turn to cover sticker orientation.  The real Ripes LED peripheral remains a
+manual GUI check.
 
-### 6. Verification Workflow
+### 5. Verification Workflow
 
 The following sequence separates host correctness, Ripes assembly tests, and
 the final binary comparison:
