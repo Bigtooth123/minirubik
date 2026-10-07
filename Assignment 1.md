@@ -1099,6 +1099,19 @@ The first four targets use the host compiler.  The two assembly targets use the
 pinned Ripes AppImage; it must be executable.  `check-h3` is the slow test and
 takes about four minutes on this installation.
 
+The target instruction-budget test is kept separate because it runs all 2,644
+distance-11 states independently on `RV32_ISS`:
+
+```bash
+make check-rv32i-distance11
+```
+
+`my_solver --list-distance-11` supplies the exact BFS-derived inputs.  Each
+Ripes run must return `x30 = 11`, `x31 = 1`, and no more than 50,000,000 retired
+instructions.  Progress is printed after every state, and matching partial
+results in `build/rv32i/distance11_rv32i.csv` are reused after an interruption.
+`DISTANCE11_JOBS=4` enables four parallel Ripes processes if desired.
+
 With `riscv64-unknown-elf-gcc` and its binutils installed, run:
 
 ```bash

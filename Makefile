@@ -1,4 +1,5 @@
 CC ?= cc
+PYTHON ?= python3
 CFLAGS ?= -O3 -std=c99 -Wall -Wextra -Wpedantic
 HOSTCC ?= cc
 HOSTCFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wpedantic
@@ -43,6 +44,9 @@ RV32I_ASM_ELF := $(RV32I_BUILD_DIR)/rv32i_solver_rv32i.elf
 RIPES ?= ./Ripes-v2.2.6-106-g5b8a616-linux-x86_64.AppImage
 RIPES_RUN ?= APPIMAGE_EXTRACT_AND_RUN=1 $(RIPES)
 RIPES_TIMEOUT ?= 120000
+DISTANCE11_LIMIT ?= 50000000
+DISTANCE11_JOBS ?= 1
+DISTANCE11_RESULTS ?= $(RV32I_BUILD_DIR)/distance11_rv32i.csv
 SAMPLE_STATE := 21345671111111
 SAMPLE_SOLUTION := B' R' D2 R' B R B' R D2 B R'
 VECTORS := tests/solutions.txt
@@ -52,8 +56,8 @@ INVALID_STATES := 1234567111111 123456711111111 02345671111111 82345671111111 \
 	12345671111110 12345671111114 1234567111111a 11345671111111 12345671111112
 
 .PHONY: all rv32i rv32i-led check check-ida check-h3 check-static check-rv32i-c \
-	check-rv32i-asm check-rv32i-led check-rv32i-binaries measure-rv32i \
-	prove clean indent
+	check-rv32i-asm check-rv32i-led check-rv32i-distance11 \
+	check-rv32i-binaries measure-rv32i prove clean indent
 
 all: solver mini
 
@@ -217,6 +221,17 @@ check-rv32i-led: $(RV32I_LED_TEST)
 		rm -f "$$output"; \
 		trap - 0 1 2 15; \
 	done
+
+check-rv32i-distance11: my_solver $(RV32I_ASM) \
+		tests/check_rv32i_distance11.py
+	$(PYTHON) tests/check_rv32i_distance11.py \
+		--solver ./my_solver \
+		--assembly $(RV32I_ASM) \
+		--ripes $(RIPES) \
+		--results $(DISTANCE11_RESULTS) \
+		--limit $(DISTANCE11_LIMIT) \
+		--jobs $(DISTANCE11_JOBS) \
+		--timeout-ms $(RIPES_TIMEOUT)
 
 check-rv32i-binaries: $(RV32I_REFERENCE_ELF) $(RV32I_ASM_ELF)
 	@test -z "$$($(RISCV_NM) -u $(RV32I_REFERENCE_ELF))"

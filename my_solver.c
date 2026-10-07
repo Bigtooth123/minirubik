@@ -11,7 +11,8 @@ enum {
     FACES = 3,
     MOVES = 9,
     MAX_SOLUTION_LENGTH = 11,
-    IDA_STACK_DEPTH = MAX_SOLUTION_LENGTH + 1
+    IDA_STACK_DEPTH = MAX_SOLUTION_LENGTH + 1,
+    DISTANCE_11_STATES = 2644
 };
 
 typedef struct {
@@ -559,6 +560,65 @@ static int output_failed(void)
     return fflush(stdout) != 0 || ferror(stdout);
 }
 
+static int list_distance_11_states(void)
+{
+    uint8_t *exact_distance = malloc(STATES);
+    uint8_t diameter;
+    unsigned count = 0;
+
+    if (!exact_distance) {
+        fputs("could not allocate exact distance table\n", stderr);
+        return 0;
+    }
+
+    uint8_t *table = build_table(&diameter, exact_distance);
+
+    if (!table) {
+        free(exact_distance);
+        fputs("could not build complete state table\n", stderr);
+        return 0;
+    }
+
+    if (diameter != MAX_SOLUTION_LENGTH) {
+        fprintf(stderr,
+                "BFS diameter mismatch: got %u, expected %u\n",
+                diameter, MAX_SOLUTION_LENGTH);
+        free(table);
+        free(exact_distance);
+        return 0;
+    }
+
+    for (uint32_t rank = 0; rank < STATES; ++rank) {
+        state_t state;
+
+        if (exact_distance[rank] != MAX_SOLUTION_LENGTH)
+            continue;
+
+        unrank_state(rank, &state);
+
+        for (uint8_t i = 0; i < CUBIES; ++i)
+            putchar((int) ('1' + state.p[i]));
+
+        for (uint8_t i = 0; i < CUBIES; ++i)
+            putchar((int) ('1' + state.o[i]));
+
+        putchar('\n');
+        ++count;
+    }
+
+    free(table);
+    free(exact_distance);
+
+    if (count != DISTANCE_11_STATES) {
+        fprintf(stderr,
+                "distance-11 state count mismatch: got %u, expected %u\n",
+                count, DISTANCE_11_STATES);
+        return 0;
+    }
+
+    return 1;
+}
+
 /*
  * Original move/inverse sanity check.
  */
@@ -1003,6 +1063,13 @@ int main(int argc, char **argv)
             fputs("full test failed\n", stderr);
             return 1;
         }
+
+        return output_failed();
+    }
+
+    if (argc == 2 && !strcmp(argv[1], "--list-distance-11")) {
+        if (!list_distance_11_states())
+            return 1;
 
         return output_failed();
     }

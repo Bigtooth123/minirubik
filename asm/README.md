@@ -24,7 +24,14 @@ make rv32i             # build/rv32i/rv32i_solver.s
 make rv32i-led         # build/rv32i/rv32i_solver_led.s
 make check-rv32i-asm   # solver tests on RV32_ISS and RV32_5S
 make check-rv32i-led   # renderer tests on RV32_ISS and RV32_5S
+make check-rv32i-distance11  # all 2,644 diameter states on RV32_ISS
 ```
+
+The exhaustive distance-11 test requires every state to retire at most
+50,000,000 instructions.  It prints each completed measurement and stores
+resumable results in `build/rv32i/distance11_rv32i.csv`.  Set
+`DISTANCE11_JOBS=4` to run four independent Ripes processes when sufficient
+host resources are available.
 
 For the GUI visualization, create a 35-by-25 LED Matrix in Ripes before
 loading `build/rv32i/rv32i_solver_led.s`.
