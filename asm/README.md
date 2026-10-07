@@ -25,6 +25,7 @@ make rv32i-led         # build/rv32i/rv32i_solver_led.s
 make check-rv32i-asm   # solver tests on RV32_ISS and RV32_5S
 make check-rv32i-led   # renderer tests on RV32_ISS and RV32_5S
 make check-rv32i-distance11  # all 2,644 diameter states on RV32_ISS
+make check-rv32i-distance11-state STATE=54721631111111
 ```
 
 The exhaustive distance-11 test requires every state to retire at most

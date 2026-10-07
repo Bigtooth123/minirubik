@@ -57,6 +57,7 @@ INVALID_STATES := 1234567111111 123456711111111 02345671111111 82345671111111 \
 
 .PHONY: all rv32i rv32i-led check check-ida check-h3 check-static check-rv32i-c \
 	check-rv32i-asm check-rv32i-led check-rv32i-distance11 \
+	check-rv32i-distance11-state \
 	check-rv32i-binaries measure-rv32i prove clean indent
 
 all: solver mini
@@ -232,6 +233,22 @@ check-rv32i-distance11: my_solver $(RV32I_ASM) \
 		--limit $(DISTANCE11_LIMIT) \
 		--jobs $(DISTANCE11_JOBS) \
 		--timeout-ms $(RIPES_TIMEOUT)
+
+check-rv32i-distance11-state: my_solver $(RV32I_ASM) \
+		tests/check_rv32i_distance11.py
+	@test -n "$(STATE)" || { \
+		echo "usage: make check-rv32i-distance11-state STATE=PPPPPPPOOOOOOO"; \
+		exit 2; \
+	}
+	$(PYTHON) tests/check_rv32i_distance11.py \
+		--solver ./my_solver \
+		--assembly $(RV32I_ASM) \
+		--ripes $(RIPES) \
+		--results $(DISTANCE11_RESULTS) \
+		--limit $(DISTANCE11_LIMIT) \
+		--jobs 1 \
+		--timeout-ms $(RIPES_TIMEOUT) \
+		--state $(STATE)
 
 check-rv32i-binaries: $(RV32I_REFERENCE_ELF) $(RV32I_ASM_ELF)
 	@test -z "$$($(RISCV_NM) -u $(RV32I_REFERENCE_ELF))"

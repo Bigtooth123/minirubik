@@ -43,6 +43,11 @@ def parse_args():
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--timeout-ms", type=int, default=120_000)
     parser.add_argument(
+        "--state",
+        action="append",
+        help="measure only this distance-11 state; may be repeated",
+    )
+    parser.add_argument(
         "--no-resume",
         action="store_true",
         help="discard prior results for the current source",
@@ -192,7 +197,7 @@ def measure_state(state, template, temporary_directory, args):
 def load_cached_results(path, source_hash, limit):
     results = {}
 
-    if not path.exists():
+    if not path.exists() or path.stat().st_size == 0:
         return results
 
     with path.open(newline="", encoding="utf-8") as stream:
@@ -276,7 +281,20 @@ def main():
     if args.limit <= 0 or args.jobs <= 0 or args.timeout_ms <= 0:
         raise RuntimeError("limit, jobs, and timeout must be positive")
 
-    states = load_states(args.solver)
+    all_states = load_states(args.solver)
+
+    if args.state:
+        known_states = set(all_states)
+        states = []
+
+        for state in args.state:
+            if not STATE_PATTERN.fullmatch(state) or state not in known_states:
+                raise RuntimeError(f"not an exact distance-11 state: {state}")
+
+            if state not in states:
+                states.append(state)
+    else:
+        states = all_states
     template_bytes = args.assembly.read_bytes()
     template = template_bytes.decode("utf-8")
     source_hash = hashlib.sha256(template_bytes).hexdigest()
@@ -310,9 +328,11 @@ def main():
 
         print_result("cached", completed_count, len(states), result, maximum)
 
-    new_file = not args.results.exists()
+    new_file = not args.results.exists() or args.results.stat().st_size == 0
 
-    with args.results.open("a", newline="", encoding="utf-8") as stream:
+    mode = "w" if new_file else "a"
+
+    with args.results.open(mode, newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=CSV_FIELDS)
 
         if new_file:

@@ -915,6 +915,18 @@ search uses twelve six-byte frames and an eleven-byte solution buffer, with no
 recursion, dynamic allocation, or runtime stack dependency.  Its pruning and
 bound update match the C algorithm verified by H3.
 
+The final inner-loop refinement stores the heuristic-table bases in `s0` and
+`s1` after the root ranks have been saved, and passes the already decoded face
+to the transition routine.  This removes repeated address construction and a
+duplicate face lookup without changing the search tree.  The three largest
+counts from the first exhaustive run changed as follows:
+
+| State | Before | After |
+|---|---:|---:|
+| `54721631111111` | 51,443,624 | 46,538,519 |
+| `14325671111111` | 50,566,385 | 45,744,703 |
+| `41752632313211` | 49,333,006 | 44,629,229 |
+
 The production source embeds one arbitrary state at `input_state`.  It parses,
 solves, and replays that state, then leaves the solution length in `x30` and a
 pass flag in `x31`.  The regression build rejects nine invalid inputs and
@@ -990,9 +1002,9 @@ measurement is accepted.  The linked section sizes were:
 | Program | `.text` | Static tables/data | Extra stack |
 |---|---:|---:|---:|
 | GCC `-O2` C reference | 1,360 bytes | 40,452-byte `.rodata` | 512-byte `.bss` |
-| Hand-written assembly | 1,172 bytes | 40,520-byte `.data` | none |
+| Hand-written assembly | 1,148 bytes | 40,520-byte `.data` | none |
 
-The hand-written program therefore removes 188 bytes, or 13.8%, from the
+The hand-written program therefore removes 212 bytes, or 15.6%, from the
 complete executable code.  Its search state is the fixed 72-byte frame array
 and 11-byte solution buffer already included in `.data`; it does not need the
 C program's runtime stack.
@@ -1003,12 +1015,12 @@ Both ELFs solved and replayed the same distance-11 input, and both left
 | Model | Program | Retired instructions | Cycles |
 |---|---|---:|---:|
 | `RV32_ISS` | GCC `-O2` C | 22,535,660 | 22,535,660 |
-| `RV32_ISS` | Hand-written assembly | 18,816,526 | 18,816,526 |
+| `RV32_ISS` | Hand-written assembly | 17,022,786 | 17,022,786 |
 | `RV32_5S` | GCC `-O2` C | 22,535,659 | 26,208,610 |
-| `RV32_5S` | Hand-written assembly | 18,816,525 | 23,536,381 |
+| `RV32_5S` | Hand-written assembly | 17,022,785 | 21,703,648 |
 
-Relative to GCC, the assembly retires 3,719,134 fewer instructions, a 16.5%
-reduction.  On the five-stage pipeline it uses 2,672,229 fewer cycles, a 10.2%
+Relative to GCC, the assembly retires 5,512,874 fewer instructions, a 24.5%
+reduction.  On the five-stage pipeline it uses 4,504,962 fewer cycles, a 17.2%
 reduction.  The smaller cycle reduction is consistent with pipeline hazards:
 removing an instruction does not necessarily remove a stall or a control
 penalty.
@@ -1051,7 +1063,7 @@ between frames and can be adjusted without changing the solver.  Its default
 is 2,000,000 loop iterations so that GUI refreshes can expose the individual
 solution frames; this delay is absent from the renderer-free measured build.
 
-With the test-only RAM framebuffer excluded, the linked GUI build has 2,156
+With the test-only RAM framebuffer excluded, the linked GUI build has 2,132
 bytes of `.text` and 40,764 bytes of static data.  The renderer therefore adds
 984 code bytes and 244 data bytes to the measured solver, while the complete
 GUI program remains well below the 128 KiB static-data limit.  These sizes are
@@ -1111,6 +1123,11 @@ Ripes run must return `x30 = 11`, `x31 = 1`, and no more than 50,000,000 retired
 instructions.  Progress is printed after every state, and matching partial
 results in `build/rv32i/distance11_rv32i.csv` are reused after an interruption.
 `DISTANCE11_JOBS=4` enables four parallel Ripes processes if desired.
+For a targeted iteration before the exhaustive rerun, use:
+
+```bash
+make check-rv32i-distance11-state STATE=54721631111111
+```
 
 With `riscv64-unknown-elf-gcc` and its binutils installed, run:
 

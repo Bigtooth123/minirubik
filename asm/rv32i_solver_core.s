@@ -46,19 +46,23 @@ ida_star:
 initial_heuristic_ready:
     addi s2, t1, 0
     or t0, s0, s1
-    bne t0, zero, ida_bound_loop
+    bne t0, zero, ida_search_initialize
 
     addi a0, zero, 1
     addi a1, zero, 0
     jalr zero, ra, 0
 
+ida_search_initialize:
+    la s5, ida_frames
+    sh s0, 0(s5)
+    sh s1, 2(s5)
+    la s0, perm_dist
+    la s1, ori_dist
+
 ida_bound_loop:
     addi s3, zero, 0
     addi s4, zero, 255
-    la s5, ida_frames
 
-    sh s0, 0(s5)
-    sh s1, 2(s5)
     sb zero, 4(s5)
     addi t0, zero, 3
     sb t0, 5(s5)
@@ -87,6 +91,7 @@ ida_try_move:
     lhu a0, 0(s5)
     lhu a1, 2(s5)
     addi a2, s6, 0
+    addi a3, t2, 0
     jal s11, apply_search_move
 
     addi s8, a0, 0
@@ -98,11 +103,9 @@ ida_try_move:
     or t0, s8, s9
     beq t0, zero, ida_solution_found
 
-    la t0, perm_dist
-    add t0, t0, s8
+    add t0, s0, s8
     lbu t1, 0(t0)
-    la t0, ori_dist
-    add t0, t0, s9
+    add t0, s1, s9
     lbu t2, 0(t0)
     sltu t3, t1, t2
     beq t3, zero, ida_heuristic_ready
@@ -116,10 +119,7 @@ ida_heuristic_ready:
     sh s8, 0(s5)
     sh s9, 2(s5)
     sb zero, 4(s5)
-    la t0, move_face
-    add t0, t0, s6
-    lbu t1, 0(t0)
-    sb t1, 5(s5)
+    sb a3, 5(s5)
     addi s3, s10, 0
     jal zero, ida_dfs_loop
 
@@ -146,22 +146,20 @@ ida_solution_found:
     jalr zero, ra, 0
 
 # Apply one HTM move to a compact state.
-#   a0 = permutation rank, a1 = orientation rank, a2 = move
+#   a0 = permutation rank, a1 = orientation rank
+#   a2 = move, a3 = decoded face
 # Returns through s11 with the next ranks in a0 and a1.
 apply_search_move:
-    la t0, move_face
-    add t0, t0, a2
-    lbu t1, 0(t0)
     la t0, move_turns
     add t0, t0, a2
     lbu t2, 0(t0)
 
     la t4, permutation
     la t5, orientation
-    beq t1, zero, apply_rows_ready
+    beq a3, zero, apply_rows_ready
 
     addi t3, zero, 1
-    beq t1, t3, apply_face_one
+    beq a3, t3, apply_face_one
 
     lui t3, 5
     addi t3, t3, -320
@@ -212,6 +210,7 @@ replay_loop:
     addi s10, t2, 0
 
     addi a2, t0, 0
+    addi a3, t2, 0
     jal s11, apply_search_move
     addi s8, s8, 1
     addi s9, s9, -1
