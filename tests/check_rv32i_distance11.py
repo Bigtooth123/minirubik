@@ -99,6 +99,7 @@ def parse_ripes_output(output):
         output,
         (
             r"([0-9][0-9,]*)\s+instructions retired",
+            r'"#\s*instructions retired"\s*:\s*([0-9][0-9,]*)',
             r'"instructions retired"\s*:\s*([0-9][0-9,]*)',
             r'"instructions_retired"\s*:\s*([0-9][0-9,]*)',
         ),
